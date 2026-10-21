@@ -3060,6 +3060,7 @@ namespace DS4Windows
                 ManagedAudioLatencyLease.ApplyRequestedProcessPriority(
                     MainWindow.ProcessPriorityClasses[Global.ProcessPriority]);
             StartupDiag($"ControlService.Start exit priority={appliedPriority}");
+            SteamGameMonitor.Start(this);
             return true;
         }
 
@@ -3543,6 +3544,7 @@ namespace DS4Windows
             }
 
             runHotPlug = false;
+            SteamGameMonitor.Stop();
             // Release only entries for controllers managed by this service run after all
             // controller handles are closed. Unrelated HidHide entries remain untouched.
             // Start will reacquire hiding as each managed controller is discovered again.

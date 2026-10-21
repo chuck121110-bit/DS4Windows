@@ -1,4 +1,4 @@
-﻿/*
+/*
 DS4Windows
 Copyright (C) 2023  Travis Nickles
 
@@ -1065,6 +1065,32 @@ namespace DS4WinWPF.DS4Control.DTOXml
         {
             get => TouchpadClickPassthru.ToString();
             set => TouchpadClickPassthru = XmlDataUtilities.StrToBool(value);
+        }
+
+        [XmlIgnore]
+        public bool TouchToggleDisablesClicks
+        {
+            get; private set;
+        }
+
+        [XmlElement("TouchToggleDisablesClicks")]
+        public string TouchToggleDisablesClicksString
+        {
+            get => TouchToggleDisablesClicks.ToString();
+            set => TouchToggleDisablesClicks = XmlDataUtilities.StrToBool(value);
+        }
+
+        [XmlIgnore]
+        public bool ResetLightbarOnGameClose
+        {
+            get; private set;
+        }
+
+        [XmlElement("ResetLightbarOnGameClose")]
+        public string ResetLightbarOnGameCloseString
+        {
+            get => ResetLightbarOnGameClose.ToString();
+            set => ResetLightbarOnGameClose = XmlDataUtilities.StrToBool(value);
         }
 
         [XmlElement("L2AntiDeadZone")]
@@ -2454,6 +2480,8 @@ namespace DS4WinWPF.DS4Control.DTOXml
             ScrollSensitivity = source.scrollSensitivity[deviceIndex];
             TouchpadInvert = source.touchpadInvert[deviceIndex];
             TouchpadClickPassthru = source.touchClickPassthru[deviceIndex];
+            TouchToggleDisablesClicks = source.touchToggleDisablesClicks[deviceIndex];
+            ResetLightbarOnGameClose = source.resetLightbarOnGameClose[deviceIndex];
             LeftTriggerMiddle = source.l2ModInfo[deviceIndex].deadZone;
             RightTriggerMiddle = source.r2ModInfo[deviceIndex].deadZone;
             L2AntiDeadZone = source.l2ModInfo[deviceIndex].antiDeadZone;
@@ -3247,6 +3275,8 @@ namespace DS4WinWPF.DS4Control.DTOXml
             destination.scrollSensitivity[deviceIndex] = ScrollSensitivity;
             destination.touchpadInvert[deviceIndex] = TouchpadInvert;
             destination.touchClickPassthru[deviceIndex] = TouchpadClickPassthru;
+            destination.touchToggleDisablesClicks[deviceIndex] = TouchToggleDisablesClicks;
+            destination.resetLightbarOnGameClose[deviceIndex] = ResetLightbarOnGameClose;
             destination.l2ModInfo[deviceIndex].deadZone = LeftTriggerMiddle;
             destination.r2ModInfo[deviceIndex].deadZone = RightTriggerMiddle;
             destination.l2ModInfo[deviceIndex].antiDeadZone = L2AntiDeadZone;

@@ -1,4 +1,4 @@
-﻿/*
+/*
 DS4Windows
 Copyright (C) 2023  Travis Nickles
 
@@ -1464,6 +1464,11 @@ namespace DS4Windows
         }
 
         private bool tempBool = false;
+        private bool TouchControlsEnabled()
+        {
+            return !Global.TouchToggleDisablesClicks[deviceNum] || Global.GetTouchActive(deviceNum);
+        }
+
         public virtual void touchesMoved(DS4Touchpad sender, TouchpadEventArgs arg)
         {
             s = dev.getCurrentStateRef();
@@ -1618,8 +1623,11 @@ namespace DS4Windows
                 trackballDXRemain = 0.0;
                 trackballDYRemain = 0.0;
 
-                cursor.touchesBegan(arg);
-                wheel.touchesBegan(arg);
+                if (TouchControlsEnabled())
+                {
+                    cursor.touchesBegan(arg);
+                    wheel.touchesBegan(arg);
+                }
             }
             else if (tempMode == TouchpadOutMode.MouseJoystick)
             {
@@ -2057,6 +2065,13 @@ namespace DS4Windows
 
         private void TouchButtonCheckProcess(TouchpadEventArgs arg)
         {
+            if (!TouchControlsEnabled())
+            {
+                upperDown = leftDown = rightDown = multiDown = false;
+                touchButtonCurrentCandidate = TouchButtonModeCandidate.None;
+                return;
+            }
+
             bool activateTouchButton = false;
             TouchButtonActivationMode touchButtonMode = Global.TouchpadButtonMode[deviceNum];
             //TouchButtonActivationMode touchButtonMode = TouchButtonActivationMode.Release;
@@ -2204,6 +2219,14 @@ namespace DS4Windows
             else
             {
                 // Don't allow virtual buttons for Passthru mode
+                return;
+            }
+
+            // Toggle off: block mouse clicks only. Do NOT clear OutputTouchButton
+            // here, so a game still sees the touchpad button via passthru when
+            // TouchpadClickPassthru is on. Movement and scroll are gated elsewhere.
+            if (!TouchControlsEnabled())
+            {
                 return;
             }
 

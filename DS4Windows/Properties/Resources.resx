@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <root>
   <!-- 
     Microsoft ResX Schema 
@@ -548,10 +548,10 @@
     <value>Tilt Up</value>
   </data>
   <data name="TouchpadMovementOff" xml:space="preserve">
-    <value>Touchpad Movement is now Off</value>
+    <value>Touchpad controls is now off</value>
   </data>
   <data name="TouchpadMovementOn" xml:space="preserve">
-    <value>Touchpad Movement is now On</value>
+    <value>Touchpad controls is now on</value>
   </data>
   <data name="TouchpadOffTip" xml:space="preserve">
     <value>Re-enable by pressing PS+Touchpad</value>

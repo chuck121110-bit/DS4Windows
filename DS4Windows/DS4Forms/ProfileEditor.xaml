@@ -1,4 +1,4 @@
-﻿<UserControl x:Class="DS4WinWPF.DS4Forms.ProfileEditor"
+<UserControl x:Class="DS4WinWPF.DS4Forms.ProfileEditor"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
@@ -1443,6 +1443,9 @@
                                 <CheckBox x:Name="colorByBatteryPerCk" Content="Color by Battery %" IsChecked="{Binding ColorBatteryPercent}"
                               ToolTip="{lex:Loc Resources:LightByBatteryTip}" Click="ColorByBatteryPerCk_Click" Margin="0,10,0,0" />
 
+                                <CheckBox Content="Reset light bar on game close" IsChecked="{Binding ResetLightbarOnGameClose}" VerticalAlignment="Center"
+                              ToolTip="When a Steam game closes, reset the light bar to the profile color" Margin="0,10,0,0" />
+
                                 <StackPanel Orientation="Horizontal" Height="60" Margin="0,10,0,0">
                                     <Button x:Name="rainbowBtn" Height="20" Width="20"
                                 ToolTip="{lex:Loc Resources:AlwaysRainbow}" Click="RainbowBtn_Click">
@@ -1536,6 +1539,9 @@
 
                                     <CheckBox Content="Start with Slide/Scroll Off" IsChecked="{Binding StartTouchpadOff}" VerticalAlignment="Center"
                                                     ToolTip="{lex:Loc Resources:TouchpadOffTip}" Margin="0,10,0,0" />
+
+                                    <CheckBox Content="Touchpad toggle also disables clicks" IsChecked="{Binding TouchToggleDisablesClicks}" VerticalAlignment="Center"
+                                                    ToolTip="PS plus touchpad turning controls off also disables scroll and mouse clicks" Margin="0,10,0,0" />
 
                                     <StackPanel Orientation="Horizontal" Margin="{StaticResource spaceMargin}">
                                         <Label Content="Rotation" ContentStringFormat="{}{0}:" />
