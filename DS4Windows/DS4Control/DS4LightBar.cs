@@ -1,4 +1,4 @@
-/*
+﻿/*
 DS4Windows
 Copyright (C) 2023  Travis Nickles
 
@@ -59,8 +59,6 @@ namespace DS4Windows
         public static bool[] forcelight = new bool[Global.MAX_DS4_CONTROLLER_COUNT] { false, false, false, false, false, false, false, false };
         public static DS4Color[] forcedColor = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
         public static byte[] forcedFlash = new byte[Global.MAX_DS4_CONTROLLER_COUNT];
-        private static DS4Color[] lastSentColor = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
-        private static bool[] lastSentColorSet = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
         internal const int PULSE_FLASH_DURATION = 2000;
         internal const double PULSE_FLASH_SEGMENTS = PULSE_FLASH_DURATION / 40;
         internal const int PULSE_CHARGING_DURATION = 4000;
@@ -375,19 +373,6 @@ namespace DS4Windows
                 if (tempLightBarOnDuration != lightState.LightBarFlashDurationOn && tempLightBarOnDuration != 1 && lightState.LightBarFlashDurationOn == 0)
                     lightState.LightBarFlashDurationOff = lightState.LightBarFlashDurationOn = 1;
 
-                if (!useForceLight && !shuttingdown && !defaultLight &&
-                    lastSentColorSet[deviceNum] &&
-                    lastSentColor[deviceNum].red == lightState.LightBarColor.red &&
-                    lastSentColor[deviceNum].green == lightState.LightBarColor.green &&
-                    lastSentColor[deviceNum].blue == lightState.LightBarColor.blue &&
-                    lightState.LightBarFlashDurationOn == 0 &&
-                    lightState.LightBarFlashDurationOff == 0)
-                {
-                    return;
-                }
-
-                lastSentColor[deviceNum] = lightState.LightBarColor;
-                lastSentColorSet[deviceNum] = true;
                 device.SetLightbarState(ref lightState);
                 //device.SetHapticState(ref haptics);
                 //device.pushHapticState(ref haptics);
