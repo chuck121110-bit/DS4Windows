@@ -3262,6 +3262,22 @@ namespace DS4Windows
             currentHap.lightbarState = lightState;
         }
 
+        // Forced lightbar resend, bypassing the dirty-flag deduplication
+        // in SetLightbarState. DualSense overrides this to use its
+        // mailbox force path. Only used by explicit force paths.
+        public virtual void ForceLightbarColor(DS4Color color)
+        {
+            DS4LightbarState lightState = new DS4LightbarState
+            {
+                LightBarColor = color,
+                LightBarExplicitlyOff = true,
+                LightBarFlashDurationOn = 0,
+                LightBarFlashDurationOff = 0,
+            };
+            currentHap.lightbarState = lightState;
+            currentHap.dirty = true;
+        }
+
         public ref DS4LightbarState GetLightbarStateRef()
         {
             return ref currentHap.lightbarState;
