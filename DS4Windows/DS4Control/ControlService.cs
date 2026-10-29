@@ -57,6 +57,29 @@ namespace DS4Windows
         private readonly object steamInputReclaimLock = new object();
         private readonly Dictionary<string, DateTime> steamInputReclaimAttempts =
             new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        // One-shot guard for Bluetooth Steam reclaim (Chuck fix, 2026-10-24):
+        // ReleaseHidHideManagedDevice clears steamInputReclaimAttempts on every
+        // physical disconnect, so a BT device restart would otherwise re-trigger
+        // reclaim on the reconnected device and loop (upstream #83). This map is
+        // NOT cleared on disconnect, so each device gets at most one reclaim
+        // attempt per 5 minutes, regardless of how many times it reconnects.
+        private readonly Dictionary<string, DateTime> steamInputReclaimOneShot =
+            new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        // Notification coalescing (Chuck fix, 2026-10-27): a Steam Input
+        // reclaim restarts the BT device, so a normal connect looks like
+        // connected -> disconnected -> connected, with a tray toast for
+        // each step. While a reclaim is pending for a device, suppress its
+        // connect/disconnect tray toasts; the final reconnect (where reclaim
+        // is skipped by the one-shot guard) is the one that notifies.
+        // Disconnect toasts are also held 15 seconds and cancelled if the
+        // same device reconnects in that window, so a real, lasting
+        // disconnect still notifies, just a little later. File log
+        // messages (LogDebug) are unchanged, only tray toasts.
+        private readonly Dictionary<string, DateTime> reclaimTraySuppress =
+            new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> pendingDisconnectTray =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly object trayCoalesceLock = new object();
         private int hidHideCurrentProcessAccessVerified;
         private bool? hidHideActiveStateBeforeManagedSession;
         // Might be useful for ScpVBus build
@@ -1577,6 +1600,82 @@ namespace DS4Windows
             }
         }
 
+        private static string TrayKeyForDevice(DS4Device device)
+        {
+            if (device == null) return string.Empty;
+            string mac = device.MacAddress;
+            if (!string.IsNullOrWhiteSpace(mac)) return mac;
+            return device.DisplayName ?? string.Empty;
+        }
+
+        private bool IsTraySuppressedForReclaim(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key)) return false;
+            lock (trayCoalesceLock)
+            {
+                if (reclaimTraySuppress.TryGetValue(key, out DateTime since) &&
+                    DateTime.UtcNow - since < TimeSpan.FromMinutes(5))
+                {
+                    return true;
+                }
+                reclaimTraySuppress.Remove(key);
+                return false;
+            }
+        }
+
+        private void MarkTrayReclaimPending(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key)) return;
+            lock (trayCoalesceLock)
+            {
+                reclaimTraySuppress[key] = DateTime.UtcNow;
+            }
+        }
+
+        private void ClearTrayReclaimPending(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key)) return;
+            lock (trayCoalesceLock)
+            {
+                reclaimTraySuppress.Remove(key);
+                pendingDisconnectTray.Remove(key);
+            }
+        }
+
+        private void CancelPendingDisconnectTray(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key)) return;
+            lock (trayCoalesceLock)
+            {
+                pendingDisconnectTray.Remove(key);
+            }
+        }
+
+        private void QueueDelayedDisconnectTray(string key, string message)
+        {
+            if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(message)) return;
+            lock (trayCoalesceLock)
+            {
+                pendingDisconnectTray[key] = message;
+            }
+            Task.Run(async () =>
+            {
+                await Task.Delay(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+                string toSend = null;
+                lock (trayCoalesceLock)
+                {
+                    if (pendingDisconnectTray.TryGetValue(key, out toSend))
+                    {
+                        pendingDisconnectTray.Remove(key);
+                    }
+                }
+                if (toSend != null)
+                {
+                    AppLogger.LogToTray(toSend);
+                }
+            });
+        }
+
         private void QueueSteamInputReclaim(DS4Device device)
         {
             if (PortableLabContext.IsActive) return;
@@ -1612,6 +1711,23 @@ namespace DS4Windows
                 return;
             }
 
+            // One-shot guard: do not re-attempt reclaim for the same device
+            // within 5 minutes, even if it disconnected and reconnected after
+            // a previous reclaim attempt. This breaks the BT restart loop.
+            lock (steamInputReclaimLock)
+            {
+                if (steamInputReclaimOneShot.TryGetValue(instanceId,
+                        out DateTime oneShotPrevious) &&
+                    DateTime.UtcNow - oneShotPrevious < TimeSpan.FromMinutes(5))
+                {
+                    LogDebug("Steam Input reclaim already attempted recently for " +
+                        device.DisplayName + "; skipping to avoid a reconnect loop.", true);
+                    ClearTrayReclaimPending(TrayKeyForDevice(device));
+                    return;
+                }
+                steamInputReclaimOneShot[instanceId] = DateTime.UtcNow;
+            }
+
             DateTime now = DateTime.UtcNow;
             lock (steamInputReclaimLock)
             {
@@ -1625,6 +1741,7 @@ namespace DS4Windows
                 steamInputReclaimAttempts[instanceId] = now;
             }
 
+            MarkTrayReclaimPending(TrayKeyForDevice(device));
             string displayName = device.DisplayName;
             Task task = Task.Run(async () =>
             {
@@ -1714,8 +1831,12 @@ namespace DS4Windows
         internal static bool ShouldRestartDeviceForSteamReclaim(
             ConnectionType connectionType)
         {
-            return connectionType != ConnectionType.USB &&
-                connectionType != ConnectionType.BT;
+            // Chuck fix, 2026-10-24: Bluetooth controllers were never reclaimed
+            // from Steam, so a BT pad Steam grabbed first stayed red / player 2
+            // with no DS4Windows output until a manual restart. Allow BT reclaim;
+            // the one-shot guard above prevents the restart/reconnect loop
+            // upstream worried about for BT. USB stays blocked as before.
+            return connectionType != ConnectionType.USB;
         }
 
         private static bool IsSteamClientRunning()
@@ -5118,7 +5239,7 @@ namespace DS4Windows
                         DS4WinWPF.Properties.Resources.ChargeController;
                 }
                 LogDebug(removed);
-                AppLogger.LogToTray(removed);
+                QueueDelayedDisconnectTray(TrayKeyForDevice(device), removed);
             }
             dualSenseAudioPassthrough.Stop(index);
             dualShock4AudioPassthrough.Stop(index);
@@ -6654,7 +6775,12 @@ namespace DS4Windows
                         (snapshot.Controller + 1).ToString(),
                         $"{snapshot.InitialBattery}");
                 LogDebug(prolog);
-                AppLogger.LogToTray(prolog);
+                string trayKey = TrayKeyForDevice(snapshot.Device);
+                CancelPendingDisconnectTray(trayKey);
+                if (!IsTraySuppressedForReclaim(trayKey))
+                {
+                    AppLogger.LogToTray(prolog);
+                }
             }
 
             if (snapshot.BatteryNotification)
