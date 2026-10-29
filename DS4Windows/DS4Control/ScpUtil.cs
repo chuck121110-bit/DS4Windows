@@ -4987,7 +4987,7 @@ namespace DS4Windows
         public string lastVersionChecked = string.Empty;
         public ulong lastVersionCheckedNum;
 
-        public const int DEFAULT_CHECK_WHEN = 24;
+        public const int DEFAULT_CHECK_WHEN = 0; // Auto-update removed 2026-10-29
         public int CheckWhen = DEFAULT_CHECK_WHEN;
 
         public const int DEFAULT_NOTIFICATIONS = 2;
