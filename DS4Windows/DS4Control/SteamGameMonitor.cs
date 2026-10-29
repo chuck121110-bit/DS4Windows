@@ -173,9 +173,18 @@ namespace DS4Windows
                     }
                 }
 
-                if (!shouldReset) return;
+                if (!shouldReset)
+                {
+                    AppLogger.LogToGui("SteamGameMonitor: WARNING Steam game closed, but ResetLightbarOnGameClose is not enabled for any controller slot, lightbar not reset", false);
+                    return;
+                }
 
-                // Reset lightbar for each connected DualSense/DualShock
+                // Reset lightbar for each connected DualSense/DualShock.
+                // Hold the forced color for about 1.5 seconds with
+                // repeated forced resends, so a single update that Steam
+                // overwrites (or that DS4 deduplicates) cannot leave the
+                // physical LED on Steam's color, then release to the
+                // normal profile routine with a final forced resend.
                 for (int i = 0; i < controlService.DS4Controllers.Length; i++)
                 {
                     DS4Device device = controlService.DS4Controllers[i];
@@ -183,14 +192,17 @@ namespace DS4Windows
                     {
                         try
                         {
-                            // Get profile's configured color and force-set it
                             LightbarSettingInfo lbInfo = Global.getLightbarSettingsInfo(i);
                             DS4Color profileColor = lbInfo.ds4winSettings.useCustomLed ?
                                 lbInfo.ds4winSettings.m_CustomLed : lbInfo.ds4winSettings.m_Led;
-                            DS4LightBar.forcedColor[i] = profileColor;
-                            DS4LightBar.forcelight[i] = true;
-                            DS4LightBar.updateLightBar(device, i);
-                            DS4LightBar.forcelight[i] = false;
+                            AppLogger.LogToGui("SteamGameMonitor: forcing lightbar reset to profile/custom color for controller " + (i + 1) + " after Steam game closed", false);
+                            for (int attempt = 0; attempt < 6; attempt++)
+                            {
+                                DS4LightBar.ForceLightbarColor(device, i, profileColor);
+                                Thread.Sleep(250);
+                            }
+                            DS4LightBar.ForceProfileLightbarColor(device, i);
+                            AppLogger.LogToGui("SteamGameMonitor: lightbar reset forced for controller " + (i + 1), false);
                         }
                         catch
                         {
