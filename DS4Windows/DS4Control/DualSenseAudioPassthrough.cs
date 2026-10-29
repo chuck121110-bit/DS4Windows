@@ -763,6 +763,22 @@ namespace DS4Windows
                     MMDevice requested = enumerator.GetDevice(requestedSpeakerEndpointId);
                     if (requested.State == DeviceState.Active && !usedIds.Contains(requested.ID))
                     {
+                        // 2026-10-29: Windows numbers a re-enumerated
+                        // DualSense audio endpoint "2- ...", then "3- ...",
+                        // when an old instance is still registered.
+                        // Never keep using a numbered duplicate while
+                        // a plain-named DualSense endpoint is active.
+                        if (!IsNumberedDuplicateFriendlyName(requested.FriendlyName))
+                        {
+                            return requested;
+                        }
+                        MMDevice plainRequested = enumerator
+                            .EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active)
+                            .FirstOrDefault(device => !usedIds.Contains(device.ID) && IsDualSenseEndpoint(device) && !IsNumberedDuplicateFriendlyName(device.FriendlyName));
+                        if (plainRequested != null)
+                        {
+                            return plainRequested;
+                        }
                         return requested;
                     }
                 }
@@ -773,6 +789,9 @@ namespace DS4Windows
             }
 
             MMDevice autoEndpoint = enumerator
+                .EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active)
+                .FirstOrDefault(device => !usedIds.Contains(device.ID) && IsDualSenseEndpoint(device) && !IsNumberedDuplicateFriendlyName(device.FriendlyName))
+                ?? enumerator
                 .EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active)
                 .FirstOrDefault(device => !usedIds.Contains(device.ID) && IsDualSenseEndpoint(device));
 
@@ -869,6 +888,26 @@ namespace DS4Windows
                     StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
+        // 2026-10-29: Windows prefixes a re-enumerated audio
+        // endpoint with a number, e.g. "2- DualSense Wireless
+        // Controller", then "3- ...". That is a duplicate instance,
+        // not a different speaker or microphone. Plain names sort
+        // first everywhere this helper is used.
+        internal static bool IsNumberedDuplicateFriendlyName(string friendlyName)
+        {
+            if (string.IsNullOrEmpty(friendlyName))
+            {
+                return false;
+            }
+            int i = 0;
+            while (i < friendlyName.Length && char.IsDigit(friendlyName[i]))
+            {
+                i++;
+            }
+            return i > 0 && i < friendlyName.Length && friendlyName[i] == '-' &&
+                (i + 1 >= friendlyName.Length || friendlyName[i + 1] == ' ');
+        }
+
         public static bool IsControllerAudioEndpoint(MMDevice device)
         {
             string identity = GetEndpointQuickIdentity(device);
@@ -941,7 +980,9 @@ namespace DS4Windows
             }
 
             return endpoints
-                .OrderByDescending(endpoint =>
+                .OrderBy(endpoint =>
+                    IsNumberedDuplicateFriendlyName(endpoint.FriendlyName))
+                .ThenByDescending(endpoint =>
                     EndpointMatchesUsbipPort(endpoint, preferredUsbipPort))
                 .ThenByDescending(endpoint => EndpointScore(endpoint,
                     preferredKind, previousEndpointId))
