@@ -6715,7 +6715,30 @@ namespace DS4Windows
             switch (viiperType)
             {
                 case ViiperVirtualDeviceType.XboxOne:
-                    TryApplyXboxOneFeedback(feedback, feedbackLength);
+                    if (!TryApplyXboxOneFeedback(feedback, feedbackLength))
+                    {
+                        // Fallback (Chuck fix, 2026-10-28): a normal
+                        // Steam/game rumble must not be dropped just because
+                        // the Xbox physical feedback session did not accept
+                        // it. Only fall back when output to the physical pad
+                        // is enabled in DS4, so disabling output still
+                        // disables rumble, and RumbleBoost etc. still apply
+                        // through SetDevRumble.
+                        if (device is DualSenseDevice &&
+                            deviceIndex >= 0 &&
+                            deviceIndex < Global.EnableOutputDataToDS4.Length &&
+                            Volatile.Read(ref Global.EnableOutputDataToDS4[deviceIndex]) &&
+                            feedbackLength == ControllerFeedbackFrame.SerializedLength &&
+                            ControllerFeedbackFrame.TryReadFrom(
+                                feedback.AsSpan(0, feedbackLength),
+                                out ControllerFeedbackFrame xboxFallbackFrame))
+                        {
+                            byte fallbackHeavy = (byte)((xboxFallbackFrame.BodyLow + 128) / 257);
+                            byte fallbackLight = (byte)((xboxFallbackFrame.BodyHigh + 128) / 257);
+                            Program.rootHub.SetDevRumble(device, fallbackHeavy,
+                                fallbackLight, deviceIndex);
+                        }
+                    }
                     break;
 
                 case ViiperVirtualDeviceType.Xbox360:
@@ -6789,8 +6812,18 @@ namespace DS4Windows
                             // native state or converting its compatibility
                             // motor bytes (usually zero) into local rumble:
                             // that can disarm the game's waveform haptics.
-                            // Keep transport recovery in the native media lane.
-                            break;
+                            // Keep transport recovery in the native media lane
+                            // UNLESS the game sent a real scalar rumble
+                            // (feedback[0] heavy, feedback[1] light, non-zero).
+                            // A normal Steam/game rumble must not be dropped
+                            // here, fall through to native retry and then to
+                            // legacy scalar rumble below. DS4 rumble settings
+                            // still apply through SetDevRumble.
+                            if (feedbackLength < 2 ||
+                                (feedback[0] == 0 && feedback[1] == 0))
+                            {
+                                break;
+                            }
                         }
 
                         if (nativeForwardingAllowed &&
