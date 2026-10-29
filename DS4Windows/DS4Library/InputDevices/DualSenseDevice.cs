@@ -3005,6 +3005,26 @@ namespace DS4Windows.InputDevices
             }
         }
 
+        // Forced lightbar resend, bypassing mailbox deduplication.
+        public void ForceProfileLightbar(
+            in DS4LightbarState lightbar)
+        {
+            physicalOutputStateMailbox.ForceProfileLightbar(lightbar);
+            QueuePhysicalOutputUpdate();
+        }
+
+        public override void ForceLightbarColor(DS4Color color)
+        {
+            DS4LightbarState lightbar = new DS4LightbarState
+            {
+                LightBarColor = color,
+                LightBarExplicitlyOff = true,
+                LightBarFlashDurationOn = 0,
+                LightBarFlashDurationOff = 0,
+            };
+            ForceProfileLightbar(lightbar);
+        }
+
         public void SetProfileMicrophoneMuteState(bool enabled, bool muted)
         {
             int state = enabled ? (muted ? 2 : 1) : 0;
