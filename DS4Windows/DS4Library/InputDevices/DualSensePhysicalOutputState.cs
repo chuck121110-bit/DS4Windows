@@ -515,6 +515,26 @@ namespace DS4Windows.InputDevices
             }
         }
 
+        // Forced resend: Steam or a game can change the physical LED
+        // behind DS4's back, so the mailbox may already think the LED
+        // is the desired color and normal SetProfileLightbar would
+        // drop the update. This always bumps the version, so the
+        // physical output loop claims and resends it even when the
+        // color is unchanged. Only used by explicit force paths
+        // (battery check, Steam game close), never by the normal
+        // every-tick lightbar routine.
+        internal void ForceProfileLightbar(in DS4LightbarState value)
+        {
+            lock (syncRoot)
+            {
+                latest = latest with
+                {
+                    ProfileLightbar = value,
+                };
+                version++;
+            }
+        }
+
         internal bool SetNativeGameLightbarOwnershipReleased(bool value)
         {
             lock (syncRoot)
