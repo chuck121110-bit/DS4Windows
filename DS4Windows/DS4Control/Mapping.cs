@@ -5327,16 +5327,19 @@ namespace DS4Windows
                                 if (bool.Parse(dets[2]))
                                 {
                                     DS4Device d = ctrl.DS4Controllers[device];
-                                    if (!actionDone[index].dev[device])
+                                    if (d != null)
                                     {
-                                        lastColor[device] = d.LightBarColor;
-                                        DS4LightBar.forcelight[device] = true;
+                                        if (!actionDone[index].dev[device])
+                                        {
+                                            lastColor[device] = d.LightBarColor;
+                                            AppLogger.LogToGui("BatteryCheck: forcing LED to battery color for controller " + (device + 1) + " (battery " + d.Battery + "%)", false);
+                                        }
+                                        DS4Color empty = new DS4Color(byte.Parse(dets[3]), byte.Parse(dets[4]), byte.Parse(dets[5]));
+                                        DS4Color full = new DS4Color(byte.Parse(dets[6]), byte.Parse(dets[7]), byte.Parse(dets[8]));
+                                        DS4Color trans = getTransitionedColor(ref empty, ref full, d.Battery);
+                                        fadetimer[device] = 100;
+                                        try { DS4LightBar.ForceLightbarColor(d, device, trans); } catch { }
                                     }
-                                    DS4Color empty = new DS4Color(byte.Parse(dets[3]), byte.Parse(dets[4]), byte.Parse(dets[5]));
-                                    DS4Color full = new DS4Color(byte.Parse(dets[6]), byte.Parse(dets[7]), byte.Parse(dets[8]));
-                                    DS4Color trans = getTransitionedColor(ref empty, ref full, d.Battery);
-                                    if (fadetimer[device] < 100)
-                                        DS4LightBar.forcedColor[device] = getTransitionedColor(ref lastColor[device], ref trans, fadetimer[device] += 2);
                                 }
                                 actionDone[index].dev[device] = true;
                             }
@@ -5394,6 +5397,11 @@ namespace DS4Windows
                                     else
                                         prevFadetimer[device] = fadetimer[device];*/
                                     DS4LightBar.forcelight[device] = false;
+                                    DS4Device rd = ctrl.DS4Controllers[device];
+                                    if (rd != null)
+                                    {
+                                        try { DS4LightBar.ForceProfileLightbarColor(rd, device); AppLogger.LogToGui("BatteryCheck: restoring LED to profile/custom color for controller " + (device + 1), false); } catch { }
+                                    }
                                     actionDone[index].dev[device] = false;
                                 }
                             }
