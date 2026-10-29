@@ -472,23 +472,87 @@ namespace DS4WinWPF.DS4Forms
             }
         }
 
-        // Notification override, retry 2026-10-29: every DS4 notification
-        // (battery, profile, connect, disconnect, touchpad, hotkey, all
-        // TrayIconLog messages) must instantly replace a currently shown
-        // one, not stack on top of it. ClearNotifications deletes the
-        // active/deferred balloon by recreating the tray icon, which is
-        // the library's own clear method. The previous attempt failed
-        // because the caller gated on IsCreated: if recreation left
-        // IsCreated false, every later toast was skipped. This version
-        // does NOT gate on IsCreated, it recreates with ForceCreate if
-        // needed, and it retries Show once after ForceCreate, so a
-        // failed clear can never silently kill all later toasts.
+        // Notification fix, 2026-10-29, second retry. Why the first
+        // retry still stacked: ClearNotifications only clears the
+        // tray library's own active/deferred balloon. Once Windows
+        // has taken a toast, it lives in Action Center, and Windows
+        // then plays queued toasts one after another, slowly, even
+        // if DS4 sent a newer profile in the meantime. That is why
+        // fast profile switching showed old profiles long after
+        // the user had already moved on. Two changes fix the
+        // user-visible behaviour, without ever gating on IsCreated
+        // (the bug that killed all toasts in the first attempt):
+        // 1) Coalesce: hold a toast for 700 ms. If another toast
+        // arrives in that window, the older held toast is dropped
+        // and only the newest is sent. Fast switching therefore
+        // sends one toast, the current profile, not a queue of
+        // old profiles. A single switch still shows in under
+        // a second.
+        // 2) Before sending, best-effort clear this app's Windows
+        // toast history, so a previous DS4 toast sitting in
+        // Action Center does not make Windows queue the new one
+        // behind it. If the Windows API is unavailable for this
+        // unpackaged app, the catch swallows it and the balloon
+        // still shows, exactly as before.
+        private readonly object notificationCoalesceLock = new();
+        private string pendingNotificationTitle;
+        private string pendingNotificationMessage;
+        private H.NotifyIcon.Core.NotificationIcon pendingNotificationIcon;
+        private DispatcherTimer notificationCoalesceTimer;
+
+        private void QueueReplacingNotification(string title, string message,
+            H.NotifyIcon.Core.NotificationIcon icon)
+        {
+            lock (notificationCoalesceLock)
+            {
+                pendingNotificationTitle = title;
+                pendingNotificationMessage = message;
+                pendingNotificationIcon = icon;
+                if (notificationCoalesceTimer == null)
+                {
+                    notificationCoalesceTimer = new DispatcherTimer
+                    {
+                        Interval = TimeSpan.FromMilliseconds(700),
+                    };
+                    notificationCoalesceTimer.Tick += (sender, e) =>
+                    {
+                        notificationCoalesceTimer.Stop();
+                        string queuedTitle;
+                        string queuedMessage;
+                        H.NotifyIcon.Core.NotificationIcon queuedIcon;
+                        lock (notificationCoalesceLock)
+                        {
+                            queuedTitle = pendingNotificationTitle;
+                            queuedMessage = pendingNotificationMessage;
+                            queuedIcon = pendingNotificationIcon;
+                            pendingNotificationTitle = null;
+                            pendingNotificationMessage = null;
+                        }
+                        if (!string.IsNullOrEmpty(queuedMessage))
+                        {
+                            ShowReplacingNotification(queuedTitle,
+                                queuedMessage, queuedIcon);
+                        }
+                    };
+                }
+                notificationCoalesceTimer.Stop();
+                notificationCoalesceTimer.Start();
+            }
+        }
+
         private void ShowReplacingNotification(string title, string message,
             H.NotifyIcon.Core.NotificationIcon icon)
         {
             if (notifyIcon == null)
             {
                 return;
+            }
+            try
+            {
+                Windows.UI.Notifications.ToastNotificationManager.History.Clear();
+            }
+            catch
+            {
             }
             try
             {
@@ -532,7 +596,7 @@ namespace DS4WinWPF.DS4Forms
                 if (!IsActive && (Global.Notifications == 2 ||
                     (Global.Notifications == 1 && e.Warning)))
                 {
-                    ShowReplacingNotification(TrayIconViewModel.ballonTitle,
+                    QueueReplacingNotification(TrayIconViewModel.ballonTitle,
                         e.Data, !e.Warning ? H.NotifyIcon.Core.NotificationIcon.Info :
                         H.NotifyIcon.Core.NotificationIcon.Warning);
                 }
