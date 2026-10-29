@@ -472,6 +472,58 @@ namespace DS4WinWPF.DS4Forms
             }
         }
 
+        // Notification override, retry 2026-10-29: every DS4 notification
+        // (battery, profile, connect, disconnect, touchpad, hotkey, all
+        // TrayIconLog messages) must instantly replace a currently shown
+        // one, not stack on top of it. ClearNotifications deletes the
+        // active/deferred balloon by recreating the tray icon, which is
+        // the library's own clear method. The previous attempt failed
+        // because the caller gated on IsCreated: if recreation left
+        // IsCreated false, every later toast was skipped. This version
+        // does NOT gate on IsCreated, it recreates with ForceCreate if
+        // needed, and it retries Show once after ForceCreate, so a
+        // failed clear can never silently kill all later toasts.
+        private void ShowReplacingNotification(string title, string message,
+            H.NotifyIcon.Core.NotificationIcon icon)
+        {
+            if (notifyIcon == null)
+            {
+                return;
+            }
+            try
+            {
+                notifyIcon.ClearNotifications();
+            }
+            catch
+            {
+            }
+            try
+            {
+                if (!notifyIcon.IsCreated)
+                {
+                    notifyIcon.ForceCreate(false);
+                }
+            }
+            catch
+            {
+            }
+            try
+            {
+                notifyIcon.ShowNotification(title, message, icon);
+            }
+            catch
+            {
+                try
+                {
+                    notifyIcon.ForceCreate(false);
+                    notifyIcon.ShowNotification(title, message, icon);
+                }
+                catch
+                {
+                }
+            }
+        }
+
         private void ShowNotification(object sender, DS4Windows.DebugEventArgs e)
         {
             Dispatcher.BeginInvoke((Action)(() =>
@@ -480,19 +532,9 @@ namespace DS4WinWPF.DS4Forms
                 if (!IsActive && (Global.Notifications == 2 ||
                     (Global.Notifications == 1 && e.Warning)))
                 {
-                    if (notifyIcon.IsCreated)
-                    {
-                        try
-                        {
-                            notifyIcon.ShowNotification(TrayIconViewModel.ballonTitle,
-                            e.Data, !e.Warning ? H.NotifyIcon.Core.NotificationIcon.Info :
-                            H.NotifyIcon.Core.NotificationIcon.Warning);
-                        }
-                        catch (System.InvalidOperationException)
-                        {
-                            // Ignore
-                        }
-                    }
+                    ShowReplacingNotification(TrayIconViewModel.ballonTitle,
+                        e.Data, !e.Warning ? H.NotifyIcon.Core.NotificationIcon.Info :
+                        H.NotifyIcon.Core.NotificationIcon.Warning);
                 }
             }));
         }
@@ -1031,7 +1073,7 @@ Suspend support not enabled.", true);
         {
             if (!IsActive && (Global.Notifications == 2))
             {
-                notifyIcon.ShowNotification(TrayIconViewModel.ballonTitle,
+                ShowReplacingNotification(TrayIconViewModel.ballonTitle,
                     message, H.NotifyIcon.Core.NotificationIcon.Info);
             }
         }
