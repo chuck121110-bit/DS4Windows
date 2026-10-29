@@ -11652,7 +11652,7 @@ namespace DS4Windows
             // now disconnected. Remove them now, before the next plug,
             // so the next VIIPER device gets plain names instead of
             // 2-, 3-. Only disconnected endpoints are removed.
-            DualSenseAudioEndpointCleanup.RemoveDisconnectedDualSenseAudioEndpoints($"VIIPER detach port {port} ({reason})");
+            DualSenseAudioEndpointCleanup.CleanupDualSenseAudioEndpoints($"VIIPER detach port {port} ({reason})", port);
 
         }
 
