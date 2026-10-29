@@ -258,6 +258,8 @@ namespace DS4WinWPF.DS4Forms
 
         public void LateChecks(ArgumentParser parser)
         {
+            // Auto-update removed 2026-10-29: never auto-check, even if an old config still has a value.
+            Global.CheckWhen = 0;
             ControlService.StartupDiag($"MainWindow.LateChecks scheduled stopArg={parser.Stop}");
             Task tempTask = Task.Run(() =>
             {
@@ -296,81 +298,16 @@ namespace DS4WinWPF.DS4Forms
 
             // Log exceptions that might occur
             Util.LogAssistBackgroundTask(tempTask);
-#if !BETA_VERSION
-            tempTask = Task.Delay(100).ContinueWith(_ =>
-            {
-                int checkwhen = Global.CheckWhen;
-                if (!PortableLabContext.IsActive && checkwhen > 0 && DateTime.Now >= Global.LastChecked + TimeSpan.FromHours(checkwhen))
-                {
-                    try
-                    {
-                        if (Changelog.CheckNewerReleaseExists(out string releaseTag, false))
-                        {
-                            DisplayUpdaterWindow(releaseTag);
-                        }
-                    }
-                    catch
-                    {
-                        Dispatcher.Invoke(() => MessageBox.Show(Strings.FailedToRetrieveLatestVersion, "DS4Windows Updater"));
-                        // bubble the exception up to allow to see what's wrong in the log
-                        throw;
-                    }
-
-                    Global.LastChecked = DateTime.Now;
-                }
-
-                // Check if main window closing was requested from app update.
-                // Quit task early
-                //if (contextclose)
-                //{
-                //    return;
-                //}
-            });
-#endif
-            Util.LogAssistBackgroundTask(tempTask);
+            // Auto-update removed 2026-10-29: no startup update check,
+            // no GitHub release check, no updater window. This custom build
+            // must never be replaced by a stock release.
         }
 
         private void DisplayUpdaterWindow(string version)
         {
-            MessageBoxResult result = MessageBoxResult.No;
-            Dispatcher.Invoke(() =>
-            {
-                var updaterWin = new UpdaterWindow(version);
-                updaterWin.ShowDialog();
-                result = updaterWin.Result;
-            });
+            // Auto-update removed 2026-10-29: updater window is never shown.
+            return;
 
-            if (result == MessageBoxResult.Yes)
-            {
-                if (!CanStartPortableUpdate()) return;
-                bool launch = true;
-                launch = mainWinVM.RunUpdaterCheck(launch, out string newUpdaterVersion);
-
-                if (launch)
-                {
-                    launch = mainWinVM.LauchDS4Updater(version);
-                }
-
-                if (launch)
-                {
-                    // The installed updater downloads first; the AIO installer
-                    // coordinates shutdown only when installation can begin.
-                    if (mainWinVM.UpdaterRequiresApplicationShutdown)
-                        RequestApplicationShutdown();
-                }
-                else
-                {
-                    Dispatcher.Invoke(() =>
-                    {
-                        MessageBox.Show(mainWinVM.LastUpdaterFailure ?? Properties.Resources.PleaseDownloadUpdater);
-                        if (mainWinVM.LastUpdaterFailure == null && !string.IsNullOrEmpty(newUpdaterVersion))
-                        {
-                            Util.StartProcessHelper(
-                                $"https://github.com/hbashton/DS4Updater/releases/tag/v{newUpdaterVersion}");
-                        }
-                    });
-                }
-            }
         }
 
         private bool CanStartPortableUpdate()
@@ -382,77 +319,9 @@ namespace DS4WinWPF.DS4Forms
 
         private void Check_Version(bool showstatus = false)
         {
-            string version = Global.exeversion;
-            string newversion = string.Empty;
-            string versionFilePath = Path.Combine(Global.appdatapath, "version.txt");
-            ulong lastVersionNum = Global.LastVersionCheckedNum;
-            //ulong lastVersion = Global.CompileVersionNumberFromString("2.1.1");
+            // Auto-update removed 2026-10-29: no version check.
+            return;
 
-            bool versionFileExists = File.Exists(versionFilePath);
-            if (versionFileExists)
-            {
-                newversion = File.ReadAllText(versionFilePath).Trim();
-                //newversion = "2.1.3";
-            }
-
-            ulong newversionNum = !string.IsNullOrEmpty(newversion) ?
-                Global.CompileVersionNumberFromString(newversion) : 0;
-
-            if (!string.IsNullOrWhiteSpace(newversion) && version.CompareTo(newversion) != 0 &&
-                lastVersionNum < newversionNum)
-            {
-                MessageBoxResult result = MessageBoxResult.No;
-                Dispatcher.Invoke(() =>
-                {
-                    UpdaterWindow updaterWin = new UpdaterWindow(newversion);
-                    updaterWin.ShowDialog();
-                    result = updaterWin.Result;
-                });
-
-                if (result == MessageBoxResult.Yes)
-                {
-                    if (!CanStartPortableUpdate()) return;
-                    bool launch = true;
-                    launch = mainWinVM.RunUpdaterCheck(launch, out string newUpdaterVersion);
-
-                    if (launch)
-                    {
-                        launch = mainWinVM.LauchDS4Updater(newversion);
-                    }
-
-                    if (launch)
-                    {
-                        if (mainWinVM.UpdaterRequiresApplicationShutdown)
-                            RequestApplicationShutdown();
-                    }
-                    else
-                    {
-                        Dispatcher.Invoke(() =>
-                        {
-                            MessageBox.Show(mainWinVM.LastUpdaterFailure ?? Properties.Resources.PleaseDownloadUpdater);
-                            if (mainWinVM.LastUpdaterFailure == null && !string.IsNullOrEmpty(newUpdaterVersion))
-                            {
-                                Util.StartProcessHelper($"https://github.com/hbashton/DS4Updater/releases/tag/v{newUpdaterVersion}");
-                            }
-                        });
-                    }
-                }
-                else
-                {
-                    if (versionFileExists)
-                        File.Delete(versionFilePath);
-                }
-            }
-            else
-            {
-                if (versionFileExists)
-                    File.Delete(versionFilePath);
-
-                if (showstatus)
-                {
-                    Dispatcher.Invoke(() => MessageBox.Show(Properties.Resources.UpToDate, "DS4Windows Updater"));
-                }
-            }
         }
 
         private void TrayIconVM_RequestMinimize(object sender, EventArgs e)
@@ -472,115 +341,45 @@ namespace DS4WinWPF.DS4Forms
             }
         }
 
-        // Notification fix, 2026-10-29, second retry. Why the first
-        // retry still stacked: ClearNotifications only clears the
-        // tray library's own active/deferred balloon. Once Windows
-        // has taken a toast, it lives in Action Center, and Windows
-        // then plays queued toasts one after another, slowly, even
-        // if DS4 sent a newer profile in the meantime. That is why
-        // fast profile switching showed old profiles long after
-        // the user had already moved on. Two changes fix the
-        // user-visible behaviour, without ever gating on IsCreated
-        // (the bug that killed all toasts in the first attempt):
-        // 1) Coalesce: hold a toast for 700 ms. If another toast
-        // arrives in that window, the older held toast is dropped
-        // and only the newest is sent. Fast switching therefore
-        // sends one toast, the current profile, not a queue of
-        // old profiles. A single switch still shows in under
-        // a second.
-        // 2) Before sending, best-effort clear this app's Windows
-        // toast history, so a previous DS4 toast sitting in
-        // Action Center does not make Windows queue the new one
-        // behind it. If the Windows API is unavailable for this
-        // unpackaged app, the catch swallows it and the balloon
-        // still shows, exactly as before.
-        private readonly object notificationCoalesceLock = new();
-        private string pendingNotificationTitle;
-        private string pendingNotificationMessage;
-        private H.NotifyIcon.Core.NotificationIcon pendingNotificationIcon;
-        private DispatcherTimer notificationCoalesceTimer;
-
-        private void QueueReplacingNotification(string title, string message,
-            H.NotifyIcon.Core.NotificationIcon icon)
+        // Notification fix, 2026-10-29, researched method.
+        // Balloons (Shell_NotifyIcon / H.NotifyIcon ShowNotification)
+        // cannot replace a previous notification: NOTIFYICONDATA has
+        // no tag, and Windows queues a new balloon behind the old one.
+        // That is why ClearNotifications and History.Clear both failed.
+        // These notices are now Windows toasts sent with ONE constant
+        // Tag and Group, via ToastNotificationManagerCompat (the
+        // documented path for an unpackaged Win32 app; raw
+        // ToastNotificationManager fails unpackaged). A new toast with
+        // the same Tag/Group replaces the previous Action Center entry
+        // instead of stacking. The tag is never the profile name, or
+        // each profile would be a separate stacking entry. No
+        // ClearNotifications, no tray recreation, no History.Clear
+        // before Show. Sent immediately, no coalesce delay, so a
+        // switch shows instantly as the current profile.
+        private void ShowToastNotification(string title, string message)
         {
-            lock (notificationCoalesceLock)
+            try
             {
-                pendingNotificationTitle = title;
-                pendingNotificationMessage = message;
-                pendingNotificationIcon = icon;
-                if (notificationCoalesceTimer == null)
-                {
-                    notificationCoalesceTimer = new DispatcherTimer
+                new Microsoft.Toolkit.Uwp.Notifications.ToastContentBuilder()
+                    .AddText(title)
+                    .AddText(message)
+                    .Show(toast =>
                     {
-                        Interval = TimeSpan.FromMilliseconds(700),
-                    };
-                    notificationCoalesceTimer.Tick += (sender, e) =>
-                    {
-                        notificationCoalesceTimer.Stop();
-                        string queuedTitle;
-                        string queuedMessage;
-                        H.NotifyIcon.Core.NotificationIcon queuedIcon;
-                        lock (notificationCoalesceLock)
-                        {
-                            queuedTitle = pendingNotificationTitle;
-                            queuedMessage = pendingNotificationMessage;
-                            queuedIcon = pendingNotificationIcon;
-                            pendingNotificationTitle = null;
-                            pendingNotificationMessage = null;
-                        }
-                        if (!string.IsNullOrEmpty(queuedMessage))
-                        {
-                            ShowReplacingNotification(queuedTitle,
-                                queuedMessage, queuedIcon);
-                        }
-                    };
-                }
-                notificationCoalesceTimer.Stop();
-                notificationCoalesceTimer.Start();
-            }
-        }
-
-        private void ShowReplacingNotification(string title, string message,
-            H.NotifyIcon.Core.NotificationIcon icon)
-        {
-            if (notifyIcon == null)
-            {
-                return;
-            }
-            try
-            {
-                Windows.UI.Notifications.ToastNotificationManager.History.Clear();
+                        toast.Tag = "ds4windows-notification";
+                        toast.Group = "ds4windows";
+                    });
             }
             catch
             {
-            }
-            try
-            {
-                notifyIcon.ClearNotifications();
-            }
-            catch
-            {
-            }
-            try
-            {
-                if (!notifyIcon.IsCreated)
-                {
-                    notifyIcon.ForceCreate(false);
-                }
-            }
-            catch
-            {
-            }
-            try
-            {
-                notifyIcon.ShowNotification(title, message, icon);
-            }
-            catch
-            {
+                // Never lose a notification entirely if the toast API
+                // is unavailable: fall back to the old balloon once.
                 try
                 {
-                    notifyIcon.ForceCreate(false);
-                    notifyIcon.ShowNotification(title, message, icon);
+                    if (notifyIcon != null)
+                    {
+                        notifyIcon.ShowNotification(title, message,
+                            H.NotifyIcon.Core.NotificationIcon.Info);
+                    }
                 }
                 catch
                 {
@@ -596,9 +395,7 @@ namespace DS4WinWPF.DS4Forms
                 if (!IsActive && (Global.Notifications == 2 ||
                     (Global.Notifications == 1 && e.Warning)))
                 {
-                    QueueReplacingNotification(TrayIconViewModel.ballonTitle,
-                        e.Data, !e.Warning ? H.NotifyIcon.Core.NotificationIcon.Info :
-                        H.NotifyIcon.Core.NotificationIcon.Warning);
+                    ShowToastNotification(TrayIconViewModel.ballonTitle, e.Data);
                 }
             }));
         }
@@ -1137,8 +934,7 @@ Suspend support not enabled.", true);
         {
             if (!IsActive && (Global.Notifications == 2))
             {
-                ShowReplacingNotification(TrayIconViewModel.ballonTitle,
-                    message, H.NotifyIcon.Core.NotificationIcon.Info);
+                ShowToastNotification(TrayIconViewModel.ballonTitle, message);
             }
         }
 
@@ -3353,23 +3149,9 @@ Suspend support not enabled.", true);
 
         private void CheckUpdatesBtn_Click(object sender, RoutedEventArgs e)
         {
-            if (PortableLabContext.IsActive) return;
-            Task.Run(() =>
-            {
-                try
-                {
-                    if (Changelog.CheckNewerReleaseExists(out string releaseTag, false))
-                        DisplayUpdaterWindow(releaseTag);
-                    else
-                        Dispatcher.Invoke(() => MessageBox.Show(Properties.Resources.UpToDate, "DS4Windows Updater"));
-                }
-                catch
-                {
-                    Dispatcher.Invoke(() => MessageBox.Show(Strings.FailedToRetrieveLatestVersion, "DS4Windows Updater"));
-                    // bubble the exception up to allow to see what's wrong in the log
-                    throw;
-                }
-            });
+            // Auto-update removed 2026-10-29: manual update check is gone.
+            return;
+
         }
 
         private void ImportProfBtn_Click(object sender, RoutedEventArgs e)
