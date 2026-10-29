@@ -702,21 +702,6 @@
                             </ComboBox>
                         </StackPanel>
 
-                        <CheckBox Content="{lex:Loc CheckUpdateStartup}" Margin="{StaticResource spaceMargin}"
-                              IsEnabled="{Binding SystemIntegrationEnabled}"
-                              IsChecked="{Binding CheckForUpdates}" ToolTip="Periodically check GitHub for a newer DS4Windows release."
-                              Style="{StaticResource BridgeDescribedCheckBoxStyle}" />
-                        <StackPanel x:Name="checkEveryOptionsStack" Orientation="Horizontal" Margin="{StaticResource spaceMargin}"
-                                IsEnabled="{Binding CheckForUpdates}">
-                            <Label Content="{lex:Loc CheckEvery}" />
-                            <!--<TextBox Text="0" VerticalAlignment="Center" />-->
-                            <xctk:IntegerUpDown d:IsHidden="True" Value="{Binding CheckEvery}" MinWidth="30" Margin="8,0,0,0"
-                                            ButtonSpinnerLocation="Right" Increment="1" Maximum="30" Minimum="0" />
-                            <ComboBox SelectedIndex="{Binding CheckEveryUnit,FallbackValue=1}" Margin="8,0,0,0" Foreground="{DynamicResource ForegroundColor}" MinWidth="60">
-                                <ComboBoxItem Content="{lex:Loc Hours}" />
-                                <ComboBoxItem Content="{lex:Loc Days}" />
-                            </ComboBox>
-                        </StackPanel>
                         <GroupBox Header="VIIPER Virtual Controller Support" Padding="8" Margin="{StaticResource spaceMargin}" HorizontalAlignment="Left">
                             <StackPanel>
                                 <TextBlock x:Name="viiperStatusText"
@@ -998,11 +983,6 @@
                                 <Button x:Name="driverSetupBtn" BorderThickness="0" Margin="0,0,4,4" Background="{x:Null}" BorderBrush="{x:Null}"
                                    Style="{StaticResource NoBGHoverBtn}" IsEnabled="{Binding SystemIntegrationEnabled}" Click="DriverSetupBtn_Click">
                                     <TextBlock Text="{lex:Loc DriverSetup}" TextDecorations="Underline" Foreground="{DynamicResource AccentColor}" Cursor="Hand" />
-                                </Button>
-                                <Button x:Name="checkUpdatesBtn" BorderThickness="0" Margin="0,0,4,4" Background="{x:Null}" BorderBrush="{x:Null}"
-                                    Style="{StaticResource NoBGHoverBtn}" IsEnabled="{Binding SystemIntegrationEnabled}" Click="CheckUpdatesBtn_Click">
-                                    <!--="CheckUpdatesBtn_Click">-->
-                                    <TextBlock Text="{lex:Loc CheckUpdateNow}" TextDecorations="Underline" Foreground="{DynamicResource AccentColor}" Cursor="Hand" />
                                 </Button>
                                 <Button x:Name="checklogViewBtn" BorderThickness="0" Background="{x:Null}" BorderBrush="{x:Null}"
                                     Style="{StaticResource NoBGHoverBtn}" Click="ChecklogViewBtn_Click" Margin="0,0,4,4">
