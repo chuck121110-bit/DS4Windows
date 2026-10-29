@@ -3074,6 +3074,12 @@ namespace DS4Windows
                     // USB/IP output imported. Remove those ports before HID
                     // discovery or DS4Windows will ingest its own VIIPER DS4,
                     // create a second output/UAC endpoint, and recurse.
+                    // 2026-10-29: Remove disconnected DualSense audio
+                    // endpoints before the first VIIPER device is
+                    // created, so Windows does not number the new
+                    // VIIPER audio endpoints 2-, 3-. Only disconnected
+                    // endpoints are removed; active ones are never touched.
+                    DualSenseAudioEndpointCleanup.RemoveDisconnectedDualSenseAudioEndpoints("startup");
                     ViiperUsbipPortManager.RecoverStaleLocalViiperPortsAtStartup();
                     // Let usbccgp/HID finish publishing removal before the
                     // first input snapshot; otherwise a detached interface can
