@@ -356,23 +356,76 @@ namespace DS4WinWPF.DS4Forms
         // ClearNotifications, no tray recreation, no History.Clear
         // before Show. Sent immediately, no coalesce delay, so a
         // switch shows instantly as the current profile.
+        // Notification fix, 2026-10-29, third attempt. User live test
+        // after the same-Tag build: the old banner goes away, but the
+        // new one does not show while the old one is still on screen.
+        // That is same-Tag update behaviour: Windows merges the new
+        // toast into the old Center entry and dismisses the visible
+        // banner without popping a new one. So same-Tag Show alone is
+        // NOT an on-screen replacement. The fix is to make every new
+        // toast a fresh notification, and explicitly dismiss the old
+        // one first: hide the last live toast instance (dismisses its
+        // banner), clear this app's toast history (removes its Center
+        // entry), then Show a new toast with a unique tag. Old is gone,
+        // new pops instantly, and Center still holds only one entry
+        // because the old one was cleared first.
+        private Windows.UI.Notifications.ToastNotification lastToastNotification;
+        private int toastNotificationCounter;
+
         private void ShowToastNotification(string title, string message)
         {
             try
             {
+                var notifier =
+                    Microsoft.Toolkit.Uwp.Notifications.ToastNotificationManagerCompat.CreateToastNotifier();
+                try
+                {
+                    if (lastToastNotification != null)
+                    {
+                        notifier.Hide(lastToastNotification);
+                    }
+                }
+                catch
+                {
+                }
+                try
+                {
+                    Microsoft.Toolkit.Uwp.Notifications.ToastNotificationManagerCompat.History.Clear();
+                }
+                catch
+                {
+                }
+                int counter = System.Threading.Interlocked.Increment(ref toastNotificationCounter);
+                var content = new Microsoft.Toolkit.Uwp.Notifications.ToastContentBuilder()
+                    .AddText(title)
+                    .AddText(message)
+                    .GetToastContent();
+                var toast = new Windows.UI.Notifications.ToastNotification(content.GetXml());
+                toast.Tag = "ds4windows-" + counter.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                toast.Group = "ds4windows";
+                notifier.Show(toast);
+                lastToastNotification = toast;
+                return;
+            }
+            catch
+            {
+            }
+            // Fallback: Toolkit builder with a unique tag, so at least
+            // a fresh toast is attempted if the manual path fails.
+            try
+            {
+                int counter = System.Threading.Interlocked.Increment(ref toastNotificationCounter);
                 new Microsoft.Toolkit.Uwp.Notifications.ToastContentBuilder()
                     .AddText(title)
                     .AddText(message)
                     .Show(toast =>
                     {
-                        toast.Tag = "ds4windows-notification";
+                        toast.Tag = "ds4windows-" + counter.ToString(System.Globalization.CultureInfo.InvariantCulture);
                         toast.Group = "ds4windows";
                     });
             }
             catch
             {
-                // Never lose a notification entirely if the toast API
-                // is unavailable: fall back to the old balloon once.
                 try
                 {
                     if (notifyIcon != null)
