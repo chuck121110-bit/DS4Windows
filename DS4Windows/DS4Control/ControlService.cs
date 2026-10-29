@@ -3079,7 +3079,7 @@ namespace DS4Windows
                     // created, so Windows does not number the new
                     // VIIPER audio endpoints 2-, 3-. Only disconnected
                     // endpoints are removed; active ones are never touched.
-                    DualSenseAudioEndpointCleanup.RemoveDisconnectedDualSenseAudioEndpoints("startup");
+                    DualSenseAudioEndpointCleanup.CleanupDualSenseAudioEndpoints("startup", -1);
                     ViiperUsbipPortManager.RecoverStaleLocalViiperPortsAtStartup();
                     // Let usbccgp/HID finish publishing removal before the
                     // first input snapshot; otherwise a detached interface can
