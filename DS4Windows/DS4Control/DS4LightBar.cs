@@ -1,4 +1,4 @@
-﻿/*
+/*
 DS4Windows
 Copyright (C) 2023  Travis Nickles
 
@@ -377,6 +377,31 @@ namespace DS4Windows
                 //device.SetHapticState(ref haptics);
                 //device.pushHapticState(ref haptics);
             }
+        }
+
+        public static DS4Color GetProfileOrCustomColor(int deviceNum)
+        {
+            LightbarSettingInfo info = getLightbarSettingsInfo(deviceNum);
+            return info.ds4winSettings.useCustomLed ?
+                info.ds4winSettings.m_CustomLed : info.ds4winSettings.m_Led;
+        }
+
+        public static void ForceLightbarColor(DS4Device device, int deviceNum, DS4Color color)
+        {
+            if (device == null) return;
+            forcedColor[deviceNum] = color;
+            forcelight[deviceNum] = true;
+            updateLightBar(device, deviceNum);
+            try { device.ForceLightbarColor(color); } catch { }
+        }
+
+        public static void ForceProfileLightbarColor(DS4Device device, int deviceNum)
+        {
+            if (device == null) return;
+            DS4Color color = GetProfileOrCustomColor(deviceNum);
+            forcelight[deviceNum] = false;
+            updateLightBar(device, deviceNum);
+            try { device.ForceLightbarColor(color); } catch { }
         }
 
         public static bool defaultLight = false, shuttingdown = false;
