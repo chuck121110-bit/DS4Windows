@@ -240,12 +240,15 @@ namespace DS4WinWPF.DS4Forms.ViewModels
         }
         public event EventHandler AppChoiceIndexChanged;
 
+        // Auto-update removed 2026-10-29: this setting no longer exists.
+        // Getter always false, setter forces CheckWhen to 0, so no
+        // startup, periodic, or manual update check can run.
         public bool CheckForUpdates
         {
-            get => DS4Windows.Global.CheckWhen > 0;
+            get => false;
             set
             {
-                DS4Windows.Global.CheckWhen = value ? 24 : 0;
+                DS4Windows.Global.CheckWhen = 0;
                 CheckForNoUpdatesWhen();
             }
         }
@@ -253,36 +256,10 @@ namespace DS4WinWPF.DS4Forms.ViewModels
 
         public int CheckEvery
         {
-            get
-            {
-                int temp = DS4Windows.Global.CheckWhen;
-                if (temp > 23)
-                {
-                    temp = temp / 24;
-                }
-                return temp;
-            }
+            get => 0;
             set
             {
-                int temp;
-                if (checkEveryUnitIdx == 0 && value < 24)
-                {
-                    temp = DS4Windows.Global.CheckWhen;
-                    if (temp != value)
-                    {
-                        DS4Windows.Global.CheckWhen = value;
-                        CheckForNoUpdatesWhen();
-                    }
-                }
-                else if (checkEveryUnitIdx == 1)
-                {
-                    temp = DS4Windows.Global.CheckWhen / 24;
-                    if (temp != value)
-                    {
-                        DS4Windows.Global.CheckWhen = value * 24;
-                        CheckForNoUpdatesWhen();
-                    }
-                }
+                DS4Windows.Global.CheckWhen = 0;
             }
         }
         public event EventHandler CheckEveryChanged;
