@@ -233,7 +233,21 @@ namespace DS4WinWPF.DS4Forms
                 App.rootHub.OutputslotMan);
 
             SetupEvents();
-            foreach (CompositeDeviceModel controller in conLvViewModel.ControllerCol)
+            // Warm up toast registration at startup, before the first real
+        // notification, so a restart with no window interaction still
+        // delivers toasts. No test toast is shown here.
+        try
+        {
+            Dispatcher.BeginInvoke((Action)(() =>
+            {
+                WarmUpToastNotifications();
+                StartTrayIconRetryTimer();
+            }), System.Windows.Threading.DispatcherPriority.Background);
+        }
+        catch
+        {
+        }
+        foreach (CompositeDeviceModel controller in conLvViewModel.ControllerCol)
             {
                 PrepareControllerItem(controller);
             }
@@ -371,86 +385,229 @@ namespace DS4WinWPF.DS4Forms
         // because the old one was cleared first.
         private Windows.UI.Notifications.ToastNotification lastToastNotification;
         private int toastNotificationCounter;
+        private readonly object toastNotificationLock = new object();
+        private bool toastWarmUpAttempted;
+        private System.Windows.Threading.DispatcherTimer trayIconRetryTimer;
+        private int trayIconRetryAttempts;
+        // Notification fix, 2026-10-30: background / tray notifications.
+        // The previous code gated every toast on !IsActive and on the
+        // window Dispatcher. A window that starts minimized, is hidden
+        // to the tray, or has never been shown and activated can leave
+        // IsActive stuck, so toasts silently never fired until the user
+        // opened, focused, then closed the window once. Toasts must not
+        // depend on window visibility, activation, or a prior ritual.
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        private struct PropertyKey
+        {
+            public System.Guid fmtid;
+            public uint pid;
+        }
+        [System.Runtime.InteropServices.ComImport]
+        [System.Runtime.InteropServices.Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")]
+        [System.Runtime.InteropServices.InterfaceType(System.Runtime.InteropServices.ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IPropertyStore
+        {
+            void GetCount(out uint count);
+            void GetAt(uint index, out PropertyKey key);
+            void GetValue(ref PropertyKey key, System.IntPtr pv);
+            void SetValue(ref PropertyKey key, System.IntPtr pv);
+            void Commit();
+        }
+        [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, PreserveSig = false)]
+        private static extern void SHGetPropertyStoreFromParsingName(string pszPath, System.IntPtr pbc, uint flags, ref System.Guid riid, out IPropertyStore ppv);
+        [System.Runtime.InteropServices.DllImport("ole32.dll", PreserveSig = false)]
+        private static extern void PropVariantClear(System.IntPtr pvar);
 
         private void ShowToastNotification(string title, string message)
         {
-            try
+            lock (toastNotificationLock)
             {
-                var notifier =
-                    Microsoft.Toolkit.Uwp.Notifications.ToastNotificationManagerCompat.CreateToastNotifier();
+                if (!toastWarmUpAttempted)
+                {
+                    WarmUpToastNotifications();
+                }
                 try
                 {
-                    if (lastToastNotification != null)
+                    if (notifyIcon != null && !notifyIcon.IsCreated && Volatile.Read(ref shutdownRequested) == 0)
                     {
-                        notifier.Hide(lastToastNotification);
+                        notifyIcon.ForceCreate(enablesEfficiencyMode: false);
+                        notifyIcon.ContextMenu = trayIconVM?.ContextMenu;
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
+                    AppLogger.LogToGui("Notification: tray icon creation for fallback failed: " + ex.GetType().Name, true);
                 }
                 try
                 {
-                    Microsoft.Toolkit.Uwp.Notifications.ToastNotificationManagerCompat.History.Clear();
+                    var notifier = Microsoft.Toolkit.Uwp.Notifications.ToastNotificationManagerCompat.CreateToastNotifier();
+                    try { if (lastToastNotification != null) { notifier.Hide(lastToastNotification); } } catch { }
+                    try { Microsoft.Toolkit.Uwp.Notifications.ToastNotificationManagerCompat.History.Clear(); } catch { }
+                    int counter = System.Threading.Interlocked.Increment(ref toastNotificationCounter);
+                    var content = new Microsoft.Toolkit.Uwp.Notifications.ToastContentBuilder().AddText(title).AddText(message).GetToastContent();
+                    var toast = new Windows.UI.Notifications.ToastNotification(content.GetXml());
+                    toast.Tag = "ds4windows-" + counter.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    toast.Group = "ds4windows";
+                    notifier.Show(toast);
+                    lastToastNotification = toast;
+                    AppLogger.LogToGui("Notification: toast shown, tag ds4windows-" + counter.ToString(System.Globalization.CultureInfo.InvariantCulture), false);
+                    return;
                 }
-                catch
+                catch (Exception ex)
                 {
+                    AppLogger.LogToGui("Notification: toast failed, exception " + ex.GetType().Name + ", trying fallback", true);
                 }
-                int counter = System.Threading.Interlocked.Increment(ref toastNotificationCounter);
-                var content = new Microsoft.Toolkit.Uwp.Notifications.ToastContentBuilder()
-                    .AddText(title)
-                    .AddText(message)
-                    .GetToastContent();
-                var toast = new Windows.UI.Notifications.ToastNotification(content.GetXml());
-                toast.Tag = "ds4windows-" + counter.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                toast.Group = "ds4windows";
-                notifier.Show(toast);
-                lastToastNotification = toast;
-                return;
-            }
-            catch
-            {
-            }
-            // Fallback: Toolkit builder with a unique tag, so at least
-            // a fresh toast is attempted if the manual path fails.
-            try
-            {
-                int counter = System.Threading.Interlocked.Increment(ref toastNotificationCounter);
-                new Microsoft.Toolkit.Uwp.Notifications.ToastContentBuilder()
-                    .AddText(title)
-                    .AddText(message)
-                    .Show(toast =>
+                try
+                {
+                    int counter = System.Threading.Interlocked.Increment(ref toastNotificationCounter);
+                    new Microsoft.Toolkit.Uwp.Notifications.ToastContentBuilder().AddText(title).AddText(message).Show(toast =>
                     {
                         toast.Tag = "ds4windows-" + counter.ToString(System.Globalization.CultureInfo.InvariantCulture);
                         toast.Group = "ds4windows";
                     });
-            }
-            catch
-            {
+                    AppLogger.LogToGui("Notification: toast shown via fallback builder, tag ds4windows-" + counter.ToString(System.Globalization.CultureInfo.InvariantCulture), false);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    AppLogger.LogToGui("Notification: fallback toast failed, exception " + ex.GetType().Name + ", trying balloon", true);
+                }
                 try
                 {
                     if (notifyIcon != null)
                     {
-                        notifyIcon.ShowNotification(title, message,
-                            H.NotifyIcon.Core.NotificationIcon.Info);
+                        notifyIcon.ShowNotification(title, message, H.NotifyIcon.Core.NotificationIcon.Info);
+                        AppLogger.LogToGui("Notification: balloon fallback shown", false);
+                    }
+                    else
+                    {
+                        AppLogger.LogToGui("Notification: balloon fallback unavailable, no tray icon", true);
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
+                    AppLogger.LogToGui("Notification: balloon fallback failed, exception " + ex.GetType().Name, true);
                 }
             }
         }
 
         private void ShowNotification(object sender, DS4Windows.DebugEventArgs e)
         {
-            Dispatcher.BeginInvoke((Action)(() =>
+            // 2026-10-30: no !IsActive gate, no Dispatcher hop. A toast must
+            // fire while DS4 sits hidden in the tray, minimized, or never
+            // shown, exactly as it does after an open/focus/close ritual.
+            if (Global.Notifications == 2 || (Global.Notifications == 1 && e.Warning))
             {
+                ShowToastNotification(TrayIconViewModel.ballonTitle, e.Data);
+            }
+            else
+            {
+                AppLogger.LogToGui("Notification: suppressed by notification setting", false);
+            }
+        }
 
-                if (!IsActive && (Global.Notifications == 2 ||
-                    (Global.Notifications == 1 && e.Warning)))
+        private void WarmUpToastNotifications()
+        {
+            toastWarmUpAttempted = true;
+            try { EnsureToastShortcut(); }
+            catch (Exception ex) { AppLogger.LogToGui("Notification: toast shortcut warm-up failed, exception " + ex.GetType().Name + ", toasts will still be attempted", true); }
+            try
+            {
+                Microsoft.Toolkit.Uwp.Notifications.ToastNotificationManagerCompat.CreateToastNotifier();
+                AppLogger.LogToGui("Notification: toast notifier warmed up", false);
+            }
+            catch (Exception ex) { AppLogger.LogToGui("Notification: toast notifier warm-up failed, exception " + ex.GetType().Name + ", toasts will still be attempted", true); }
+        }
+
+        private void EnsureToastShortcut()
+        {
+            string exePath;
+            try { exePath = Global.exelocation; }
+            catch { exePath = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName; }
+            if (string.IsNullOrWhiteSpace(exePath) || !System.IO.File.Exists(exePath))
+            {
+                AppLogger.LogToGui("Notification: toast shortcut skipped, exe path unavailable", true);
+                return;
+            }
+            string programsFolder = System.Environment.GetFolderPath(System.Environment.SpecialFolder.StartMenu);
+            if (string.IsNullOrWhiteSpace(programsFolder))
+            {
+                AppLogger.LogToGui("Notification: toast shortcut skipped, Start Menu folder unavailable", true);
+                return;
+            }
+            string shortcutPath = System.IO.Path.Combine(programsFolder, "DS4Windows.lnk");
+            if (!System.IO.File.Exists(shortcutPath))
+            {
+                dynamic shell = System.Activator.CreateInstance(System.Type.GetTypeFromProgID("WScript.Shell"));
+                dynamic shortcut = shell.CreateShortcut(shortcutPath);
+                shortcut.TargetPath = exePath;
+                shortcut.WorkingDirectory = System.IO.Path.GetDirectoryName(exePath);
+                shortcut.Description = "DS4Windows";
+                shortcut.IconLocation = exePath;
+                shortcut.Save();
+                AppLogger.LogToGui("Notification: toast shortcut created in Start Menu", false);
+            }
+            try
+            {
+                SetShortcutAppUserModelId(shortcutPath, "DS4Windows");
+                AppLogger.LogToGui("Notification: toast shortcut AppUserModelID set to DS4Windows", false);
+            }
+            catch (Exception ex) { AppLogger.LogToGui("Notification: toast shortcut AppUserModelID set failed, exception " + ex.GetType().Name + ", toasts will still be attempted", true); }
+        }
+
+        private void SetShortcutAppUserModelId(string shortcutPath, string appUserModelId)
+        {
+            System.Guid iid = new System.Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
+            SHGetPropertyStoreFromParsingName(shortcutPath, System.IntPtr.Zero, 0, ref iid, out IPropertyStore store);
+            System.IntPtr pv = System.IntPtr.Zero;
+            try
+            {
+                pv = System.Runtime.InteropServices.Marshal.AllocCoTaskMem(16);
+                System.Runtime.InteropServices.Marshal.WriteInt16(pv, 0, 31);
+                System.Runtime.InteropServices.Marshal.WriteInt16(pv, 2, 0);
+                System.Runtime.InteropServices.Marshal.WriteInt16(pv, 4, 0);
+                System.Runtime.InteropServices.Marshal.WriteInt16(pv, 6, 0);
+                System.Runtime.InteropServices.Marshal.WriteIntPtr(pv, 8, System.Runtime.InteropServices.Marshal.StringToCoTaskMemUni(appUserModelId));
+                PropertyKey key = new PropertyKey { fmtid = new System.Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F"), pid = 5 };
+                store.SetValue(ref key, pv);
+                store.Commit();
+            }
+            finally
+            {
+                if (pv != System.IntPtr.Zero)
                 {
-                    ShowToastNotification(TrayIconViewModel.ballonTitle, e.Data);
+                    try { PropVariantClear(pv); } catch { }
+                    System.Runtime.InteropServices.Marshal.FreeCoTaskMem(pv);
                 }
-            }));
+                if (store != null) { System.Runtime.InteropServices.Marshal.ReleaseComObject(store); }
+            }
+        }
+
+        private void StartTrayIconRetryTimer()
+        {
+            try
+            {
+                if (trayIconRetryTimer != null || notifyIcon == null || notifyIcon.IsCreated) { return; }
+                trayIconRetryAttempts = 0;
+                trayIconRetryTimer = new System.Windows.Threading.DispatcherTimer { Interval = System.TimeSpan.FromSeconds(5) };
+                trayIconRetryTimer.Tick += (sender, e) =>
+                {
+                    if (Volatile.Read(ref shutdownRequested) != 0 || notifyIcon == null) { trayIconRetryTimer?.Stop(); return; }
+                    if (notifyIcon.IsCreated) { trayIconRetryTimer?.Stop(); return; }
+                    trayIconRetryAttempts++;
+                    try
+                    {
+                        notifyIcon.ForceCreate(enablesEfficiencyMode: false);
+                        notifyIcon.ContextMenu = trayIconVM?.ContextMenu;
+                        AppLogger.LogToGui("Notification: tray icon created on retry attempt " + trayIconRetryAttempts, false);
+                        trayIconRetryTimer?.Stop();
+                    }
+                    catch (Exception ex) { AppLogger.LogToGui("Notification: tray icon retry attempt " + trayIconRetryAttempts + " failed, exception " + ex.GetType().Name, true); }
+                };
+                trayIconRetryTimer.Start();
+                AppLogger.LogToGui("Notification: tray icon retry timer started", false);
+            }
+            catch (Exception ex) { AppLogger.LogToGui("Notification: tray icon retry timer failed to start, exception " + ex.GetType().Name, true); }
         }
 
         private void SetupEvents()
@@ -985,7 +1142,8 @@ Suspend support not enabled.", true);
 
         private void ShowHotkeyNotification(string message)
         {
-            if (!IsActive && (Global.Notifications == 2))
+            // 2026-10-30: no !IsActive gate, same reason as ShowNotification.
+            if (Global.Notifications == 2)
             {
                 ShowToastNotification(TrayIconViewModel.ballonTitle, message);
             }
@@ -1053,6 +1211,7 @@ Suspend support not enabled.", true);
             if (lastFailure != null)
             {
                 AppLogger.LogToGui($"Tray icon creation failed: {lastFailure.Message}", true);
+            StartTrayIconRetryTimer();
             }
         }
 
