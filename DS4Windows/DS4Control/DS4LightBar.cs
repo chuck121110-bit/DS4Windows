@@ -57,6 +57,17 @@ namespace DS4Windows
         };
 
         public static bool[] forcelight = new bool[Global.MAX_DS4_CONTROLLER_COUNT] { false, false, false, false, false, false, false, false };
+        // BatteryCheck latch: holds the battery color for at least 3
+        // seconds after a trigger, even if the trigger was only a brief
+        // pulse, so the color is actually visible instead of flashing
+        // for 30-100 ms and restoring immediately on release.
+        public static DateTime[] batteryCheckLatchUntil = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT]
+        {
+            DateTime.MinValue, DateTime.MinValue, DateTime.MinValue, DateTime.MinValue,
+            DateTime.MinValue, DateTime.MinValue, DateTime.MinValue, DateTime.MinValue,
+        };
+        public static DS4Color[] batteryCheckLatchColor = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
+        public static readonly TimeSpan BatteryCheckLatchDuration = TimeSpan.FromSeconds(3);
         public static DS4Color[] forcedColor = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
         public static byte[] forcedFlash = new byte[Global.MAX_DS4_CONTROLLER_COUNT];
         internal const int PULSE_FLASH_DURATION = 2000;
@@ -66,7 +77,33 @@ namespace DS4Windows
 
         public static void updateLightBar(DS4Device device, int deviceNum)
         {
+            // Latch expiry is checked on the regular lightbar tick, so it
+            // fires even after the trigger has been released. Expiry
+            // restores profile/custom color through the forced resend path.
+            // It is checked before the normal routine, and the latch flag
+            // is cleared first so the restore itself cannot re-enter here.
+            if (deviceNum >= 0 && deviceNum < Global.MAX_DS4_CONTROLLER_COUNT &&
+                batteryCheckLatchUntil[deviceNum] != DateTime.MinValue &&
+                DateTime.UtcNow >= batteryCheckLatchUntil[deviceNum])
+            {
+                batteryCheckLatchUntil[deviceNum] = DateTime.MinValue;
+                try { device?.EndBatteryCheckLatch(); } catch { }
+                AppLogger.LogToGui("BatteryCheck latch expired, restoring LED to profile/custom color for controller " + (deviceNum + 1), false);
+                if (device != null)
+                {
+                    try { ForceProfileLightbarColor(device, deviceNum); } catch { }
+                }
+                return;
+            }
             DS4Color color = new DS4Color();
+            if (IsBatteryCheckLatchActive(deviceNum))
+            {
+                // Keep the latch color forced even if something else
+                // cleared forcelight, and keep native ownership released.
+                forcelight[deviceNum] = true;
+                forcedColor[deviceNum] = batteryCheckLatchColor[deviceNum];
+                try { device?.BeginBatteryCheckLatch(BatteryCheckLatchDuration); } catch { }
+            }
             bool useForceLight = forcelight[deviceNum];
             LightbarSettingInfo lightbarSettingInfo = getLightbarSettingsInfo(deviceNum);
             LightbarDS4WinInfo lightModeInfo = lightbarSettingInfo.ds4winSettings;
@@ -384,6 +421,31 @@ namespace DS4Windows
             LightbarSettingInfo info = getLightbarSettingsInfo(deviceNum);
             return info.ds4winSettings.useCustomLed ?
                 info.ds4winSettings.m_CustomLed : info.ds4winSettings.m_Led;
+        }
+
+        public static bool IsBatteryCheckLatchActive(int deviceNum)
+        {
+            return deviceNum >= 0 && deviceNum < Global.MAX_DS4_CONTROLLER_COUNT &&
+                batteryCheckLatchUntil[deviceNum] != DateTime.MinValue &&
+                DateTime.UtcNow < batteryCheckLatchUntil[deviceNum];
+        }
+
+        // Start or extend the latch to 3 seconds from now, force the
+        // battery color, and release native game lightbar ownership for
+        // the latch window so a game like REPO cannot immediately
+        // overwrite it with its own (often black) color.
+        public static void RefreshBatteryCheckLatch(DS4Device device, int deviceNum, DS4Color color)
+        {
+            if (device == null || deviceNum < 0 || deviceNum >= Global.MAX_DS4_CONTROLLER_COUNT) return;
+            bool first = !IsBatteryCheckLatchActive(deviceNum);
+            batteryCheckLatchUntil[deviceNum] = DateTime.UtcNow + BatteryCheckLatchDuration;
+            batteryCheckLatchColor[deviceNum] = color;
+            try { device.BeginBatteryCheckLatch(BatteryCheckLatchDuration); } catch { }
+            try { ForceLightbarColor(device, deviceNum, color); } catch { }
+            if (first)
+            {
+                AppLogger.LogToGui("BatteryCheck latch started, holding battery color for 3 seconds for controller " + (deviceNum + 1), false);
+            }
         }
 
         public static void ForceLightbarColor(DS4Device device, int deviceNum, DS4Color color)
