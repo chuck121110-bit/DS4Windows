@@ -4005,13 +4005,20 @@ namespace DS4Windows
             {
                 if (device.ProfileLinkId is string profileId && containsLinkedProfile(profileId))
                 {
-                    ProfilePath[index] = getLinkedProfile(profileId);
+                    ProfilePath[index] = RememberedProfile.ResolveForConnect(index, OlderProfilePath[index], true, getLinkedProfile(profileId));
                     Global.linkedProfileCheck[index] = true;
                 }
                 else
                 {
-                    ProfilePath[index] = OlderProfilePath[index];
+                    // 2026-10-30 remembered profile: do not reset to the
+                    // slot default on every connect. Use the last manually
+                    // switched profile for this slot if one was saved and
+                    // its file still exists, otherwise fall back to the
+                    // slot default. Slot default itself is unchanged.
+                    string rememberedResolved = RememberedProfile.ResolveForConnect(index, OlderProfilePath[index], false, null);
+                    ProfilePath[index] = rememberedResolved;
                     Global.linkedProfileCheck[index] = false;
+                    StartupDiag($"Remembered profile resolve index={index} profile=\"{ProfilePath[index]}\" source={RememberedProfile.GetConnectSource(index)} slotDefault=\"{OlderProfilePath[index]}\"");
                 }
 
                 // Now attempt to load requested profile and settings
@@ -6793,6 +6800,7 @@ namespace DS4Windows
                         (snapshot.Controller + 1).ToString(),
                         $"{snapshot.InitialBattery}");
                 LogDebug(prolog);
+                LogDebug($"Connect notification: controller {snapshot.Controller + 1} profile \"{snapshot.ProfileName}\" source={RememberedProfile.GetConnectSource(snapshot.Controller)} (remembered profile applied at prepare if present, else slot default; slot default itself was not changed)");
                 string trayKey = TrayKeyForDevice(snapshot.Device);
                 CancelPendingDisconnectTray(trayKey);
                 if (!IsTraySuppressedForReclaim(trayKey))
@@ -7153,14 +7161,16 @@ namespace DS4Windows
                         if (device.ProfileLinkId is string profileId &&
                             containsLinkedProfile(profileId))
                         {
-                            ProfilePath[slot] = getLinkedProfile(profileId);
+                            ProfilePath[slot] = RememberedProfile.ResolveForConnect(slot, OlderProfilePath[slot], true, getLinkedProfile(profileId));
                             Global.linkedProfileCheck[slot] = true;
                         }
-                        else
-                        {
-                            ProfilePath[slot] = OlderProfilePath[slot];
-                            Global.linkedProfileCheck[slot] = false;
-                        }
+                    else
+                    {
+                        // 2026-10-30 remembered profile, second prepare path.
+                        ProfilePath[slot] = RememberedProfile.ResolveForConnect(slot, OlderProfilePath[slot], false, null);
+                        Global.linkedProfileCheck[slot] = false;
+                        lastPrepareDiagnostic = $"remembered-profile slot={slot} profile=\"{ProfilePath[slot]}\" source={RememberedProfile.GetConnectSource(slot)}";
+                    }
 
                         lastPrepareDiagnostic = "profile-loading";
                         profileLoaded = LoadProfile(slot, false, service,
