@@ -4319,6 +4319,18 @@ namespace DS4Windows
             // Called only on the source's serialized queue. Touch/gyro filters
             // and mapping state must remain owned by that bounded boundary.
             CheckProfileMappingOptions(ind, device);
+            // A profile load sets LightBarColor through the normal,
+            // deduplicated path, which a running game that owns the
+            // lightbar can override. Force the newly selected
+            // profile's custom or profile color instead, with the
+            // burst in DS4LightBar (deduped against the switch
+            // worker hook, so one switch is one burst).
+            try
+            {
+                string switchedName = useTempProfile[ind] ? tempprofilename[ind] : ProfilePath[ind];
+                DS4LightBar.ForceProfileSwitchLedReset(device, ind, switchedName);
+            }
+            catch { }
             if (!TryCaptureProfileActionTarget(ind, device, out var target)) return;
             QueueProfileColdOptions(ind, target, revision, launchProgram: false);
         }
