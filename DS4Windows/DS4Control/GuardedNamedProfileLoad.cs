@@ -140,6 +140,11 @@ internal sealed class GuardedNamedProfileLoad
                         Global.tempprofilename[slot] = string.Empty;
                         Global.tempprofileDistance[slot] = false;
                         Global.useTempProfile[slot] = false;
+                        // 2026-10-30 remembered profile: UI named regular
+                        // switches do not go through the Mapping worker,
+                        // so save here as well. Auto-profiles do not use
+                        // this path, so they are not saved here.
+                        try { RememberedProfile.Save(slot, name); } catch { }
                         result = new(GuardedProfileSwitchStatus.Applied, revision);
                     });
                 }
