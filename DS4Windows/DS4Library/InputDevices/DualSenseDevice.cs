@@ -3029,6 +3029,22 @@ namespace DS4Windows.InputDevices
             return physicalOutputStateMailbox.IsBatteryCheckLatchActive();
         }
 
+        public override void BeginProfileSwitchLedHold(TimeSpan duration)
+        {
+            physicalOutputStateMailbox.BeginProfileSwitchLedHold(duration);
+            QueuePhysicalOutputUpdate();
+        }
+
+        public override void EndProfileSwitchLedHold()
+        {
+            physicalOutputStateMailbox.EndProfileSwitchLedHold();
+        }
+
+        public override bool IsProfileSwitchLedHoldActive()
+        {
+            return physicalOutputStateMailbox.IsProfileSwitchLedHoldActive();
+        }
+
         public override void ForceLightbarColor(DS4Color color)
         {
             DS4LightbarState lightbar = new DS4LightbarState
@@ -4314,7 +4330,8 @@ namespace DS4Windows.InputDevices
 
             int ledOwnershipUpdate = GetNativeGameLedOwnershipUpdate(report,
                 1);
-            if (physicalOutputStateMailbox.IsBatteryCheckLatchActive())
+            if (physicalOutputStateMailbox.IsBatteryCheckLatchActive() ||
+                physicalOutputStateMailbox.IsProfileSwitchLedHoldActive())
             {
                 ledOwnershipUpdate = -1;
             }
@@ -6666,7 +6683,8 @@ namespace DS4Windows.InputDevices
             int ledOwnershipUpdate = hasNativeGameState ?
                 GetNativeGameLedOwnershipUpdate(report,
                     offset + BluetoothCombinedStateOffset) : 0;
-            if (physicalOutputStateMailbox.IsBatteryCheckLatchActive())
+            if (physicalOutputStateMailbox.IsBatteryCheckLatchActive() ||
+                physicalOutputStateMailbox.IsProfileSwitchLedHoldActive())
             {
                 ledOwnershipUpdate = -1;
             }
@@ -6809,7 +6827,8 @@ namespace DS4Windows.InputDevices
 
             int ledOwnershipUpdate =
                 GetNativeGameLedOwnershipUpdate(report, offset + 1);
-            if (physicalOutputStateMailbox.IsBatteryCheckLatchActive())
+            if (physicalOutputStateMailbox.IsBatteryCheckLatchActive() ||
+                physicalOutputStateMailbox.IsProfileSwitchLedHoldActive())
             {
                 ledOwnershipUpdate = -1;
             }
