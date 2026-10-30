@@ -18,6 +18,8 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 using System;
 using System.Drawing;
+using System.Threading;
+using System.Threading.Tasks;
 using static System.Math;
 using static DS4Windows.Global;
 using System.Diagnostics;
@@ -414,6 +416,63 @@ namespace DS4Windows
                 //device.SetHapticState(ref haptics);
                 //device.pushHapticState(ref haptics);
             }
+        }
+
+        // Dedup for the two profile-switch hooks below (the
+        // serialized switch worker and CheckProfileOptionsAfterLoad
+        // can both fire for one switch). The same slot and profile
+        // name within 3 seconds is one switch, not two bursts.
+        private static readonly string[] lastProfileSwitchResetName =
+            new string[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static readonly DateTime[] lastProfileSwitchResetAt =
+            new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
+
+        // Forced LED reset on profile switch. Custom LED is per
+        // profile, not one global color: if the newly selected
+        // profile has useCustomLed on, use that profile's
+        // m_CustomLed; otherwise use that profile's m_Led. This
+        // uses the forced resend path, not the normal deduplicated
+        // PublishProfileLightbar path, so it works even when DS4
+        // already thinks the LED is that color, and it holds native
+        // game lightbar ownership released for the burst so a
+        // running game cannot immediately overwrite it with black.
+        public static void ForceProfileSwitchLedReset(DS4Device device, int deviceNum, string profileName)
+        {
+            if (device == null || deviceNum < 0 || deviceNum >= Global.MAX_DS4_CONTROLLER_COUNT) return;
+            string name = string.IsNullOrEmpty(profileName) ? ProfilePath[deviceNum] : profileName;
+            if (string.Equals(lastProfileSwitchResetName[deviceNum], name, StringComparison.Ordinal) &&
+                (DateTime.UtcNow - lastProfileSwitchResetAt[deviceNum]).TotalSeconds < 3)
+            {
+                return;
+            }
+            lastProfileSwitchResetName[deviceNum] = name;
+            lastProfileSwitchResetAt[deviceNum] = DateTime.UtcNow;
+            LightbarSettingInfo info;
+            try { info = getLightbarSettingsInfo(deviceNum); }
+            catch { return; }
+            bool useCustom = info.ds4winSettings.useCustomLed;
+            DS4Color color = useCustom ? info.ds4winSettings.m_CustomLed : info.ds4winSettings.m_Led;
+            AppLogger.LogToGui("Profile switch: forcing LED to " + (useCustom ? "custom" : "profile") +
+                " color " + color.red + "," + color.green + "," + color.blue +
+                " for controller " + (deviceNum + 1) + " (profile \"" + name + "\")", false);
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    try { device.BeginProfileSwitchLedHold(TimeSpan.FromSeconds(2)); } catch { }
+                    for (int attempt = 0; attempt < 6; attempt++)
+                    {
+                        try { ForceLightbarColor(device, deviceNum, color); } catch { }
+                        Thread.Sleep(250);
+                    }
+                }
+                catch { }
+                try { device.EndProfileSwitchLedHold(); } catch { }
+                try { ForceProfileLightbarColor(device, deviceNum); } catch { }
+                AppLogger.LogToGui("Profile switch: LED reset forced to " + (useCustom ? "custom" : "profile") +
+                    " color " + color.red + "," + color.green + "," + color.blue +
+                    " for controller " + (deviceNum + 1) + " (profile \"" + name + "\")", false);
+            });
         }
 
         public static DS4Color GetProfileOrCustomColor(int deviceNum)
