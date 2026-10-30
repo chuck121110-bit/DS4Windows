@@ -107,6 +107,8 @@ namespace DS4Windows.InputDevices
         private DualSensePhysicalOutputSnapshot latest =
             DualSensePhysicalOutputSnapshot.Default;
         private long version = 1;
+        private bool batteryCheckLatchActive = false;
+        private DateTime batteryCheckLatchUntil = DateTime.MinValue;
 
         internal DualSensePhysicalOutputSnapshot ReadLatest()
         {
@@ -539,10 +541,58 @@ namespace DS4Windows.InputDevices
         {
             lock (syncRoot)
             {
+                if (!value && batteryCheckLatchActive)
+                {
+                    if (DateTime.UtcNow < batteryCheckLatchUntil)
+                    {
+                        return false;
+                    }
+                    batteryCheckLatchActive = false;
+                }
                 return PublishLocked(latest with
                 {
                     NativeGameLightbarOwnershipReleased = value,
                 });
+            }
+        }
+
+        // BatteryCheck latch: while active, a native game packet may not
+        // reclaim lightbar ownership, so a forced battery color is not
+        // immediately overwritten by the game. The latch is started by
+        // Mapping on a battery check trigger and expires in DS4LightBar
+        // on the regular lightbar tick, which then restores profile color.
+        internal void BeginBatteryCheckLatch(TimeSpan duration)
+        {
+            lock (syncRoot)
+            {
+                batteryCheckLatchActive = true;
+                batteryCheckLatchUntil = DateTime.UtcNow + duration;
+                latest = latest with
+                {
+                    NativeGameLightbarOwnershipReleased = true,
+                };
+                version++;
+            }
+        }
+
+        internal void EndBatteryCheckLatch()
+        {
+            lock (syncRoot)
+            {
+                batteryCheckLatchActive = false;
+            }
+        }
+
+        internal bool IsBatteryCheckLatchActive()
+        {
+            lock (syncRoot)
+            {
+                if (batteryCheckLatchActive && DateTime.UtcNow < batteryCheckLatchUntil)
+                {
+                    return true;
+                }
+                batteryCheckLatchActive = false;
+                return false;
             }
         }
 
