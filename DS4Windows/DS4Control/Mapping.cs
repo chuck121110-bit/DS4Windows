@@ -1595,6 +1595,24 @@ namespace DS4Windows
                                 }
                             }
                             catch { }
+                            // 2026-10-30 remembered profile: save the profile
+                            // actually loaded by this manual switch, so the
+                            // next connect loads it instead of the slot
+                            // default. Temp switches (PS-button profiles)
+                            // are saved too, because for Chuck those are
+                            // his manual profile choices. Auto-profiles do
+                            // not go through this worker, so they are not
+                            // saved here. A corrected tray notification for
+                            // this switch already fires via the special
+                            // action path when ProfileChangedNotification
+                            // is on, so no extra toast is added here.
+                            try
+                            {
+                                string effectiveName = tempProfile ? profileName : (string.IsNullOrEmpty(profileName) ? Global.ProfilePath[device] : profileName);
+                                if (!string.IsNullOrWhiteSpace(effectiveName))
+                                    RememberedProfile.Save(device, effectiveName);
+                            }
+                            catch { }
                         }
                         afterLoad?.Invoke(loaded);
                     }
