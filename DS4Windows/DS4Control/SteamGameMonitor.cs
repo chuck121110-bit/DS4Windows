@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
+using DS4Windows.InputDevices;
 
 namespace DS4Windows
 {
@@ -177,6 +178,26 @@ namespace DS4Windows
                 {
                     AppLogger.LogToGui("SteamGameMonitor: WARNING Steam game closed, but ResetLightbarOnGameClose is not enabled for any controller slot, lightbar not reset", false);
                     return;
+                }
+
+                // Release native game lightbar ownership first, so a game
+                // that set the LED to black (or any game color) cannot
+                // keep overriding the profile color after it closes.
+                for (int i = 0; i < controlService.DS4Controllers.Length; i++)
+                {
+                    DS4Device device = controlService.DS4Controllers[i];
+                    if (device != null && device.IsAlive())
+                    {
+                        try
+                        {
+                            if (device is DualSenseDevice dualSense)
+                            {
+                                dualSense.ReleaseNativeGameOutputOwnership();
+                                AppLogger.LogToGui("SteamGameMonitor: released native game lightbar ownership for controller " + (i + 1) + " after Steam game closed", false);
+                            }
+                        }
+                        catch { }
+                    }
                 }
 
                 // Reset lightbar for each connected DualSense/DualShock.
