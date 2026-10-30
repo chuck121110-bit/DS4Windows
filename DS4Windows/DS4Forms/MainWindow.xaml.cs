@@ -386,6 +386,13 @@ namespace DS4WinWPF.DS4Forms
         private Windows.UI.Notifications.ToastNotification lastToastNotification;
         private int toastNotificationCounter;
         private readonly object toastNotificationLock = new object();
+        // Notification reliability, 2026-10-30: rapid toasts must not
+        // instantly hide the previous banner. Queue them and space
+        // banners at least 4 seconds apart, merging exact duplicates.
+        private System.DateTime toastLastShownUtc = System.DateTime.MinValue;
+        private readonly System.Collections.Generic.Queue<System.Tuple<string, string>> toastPendingQueue = new System.Collections.Generic.Queue<System.Tuple<string, string>>();
+        private System.Threading.Timer toastQueueTimer;
+        private const int ToastMinimumBannerIntervalMs = 4000;
         private bool toastWarmUpAttempted;
         private System.Windows.Threading.DispatcherTimer trayIconRetryTimer;
         private int trayIconRetryAttempts;
@@ -402,6 +409,15 @@ namespace DS4WinWPF.DS4Forms
             public System.Guid fmtid;
             public uint pid;
         }
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Explicit)]
+        private struct PropVariant
+        {
+            [System.Runtime.InteropServices.FieldOffset(0)] public ushort vt;
+            [System.Runtime.InteropServices.FieldOffset(2)] public ushort wReserved1;
+            [System.Runtime.InteropServices.FieldOffset(4)] public ushort wReserved2;
+            [System.Runtime.InteropServices.FieldOffset(6)] public ushort wReserved3;
+            [System.Runtime.InteropServices.FieldOffset(8)] public System.IntPtr pointer;
+        }
         [System.Runtime.InteropServices.ComImport]
         [System.Runtime.InteropServices.Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")]
         [System.Runtime.InteropServices.InterfaceType(System.Runtime.InteropServices.ComInterfaceType.InterfaceIsIUnknown)]
@@ -409,23 +425,111 @@ namespace DS4WinWPF.DS4Forms
         {
             void GetCount(out uint count);
             void GetAt(uint index, out PropertyKey key);
-            void GetValue(ref PropertyKey key, System.IntPtr pv);
-            void SetValue(ref PropertyKey key, System.IntPtr pv);
+            void GetValue(ref PropertyKey key, ref PropVariant pv);
+            void SetValue(ref PropertyKey key, ref PropVariant pv);
             void Commit();
         }
         [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, PreserveSig = false)]
         private static extern void SHGetPropertyStoreFromParsingName(string pszPath, System.IntPtr pbc, uint flags, ref System.Guid riid, out IPropertyStore ppv);
         [System.Runtime.InteropServices.DllImport("ole32.dll", PreserveSig = false)]
-        private static extern void PropVariantClear(System.IntPtr pvar);
+        private static extern void PropVariantClear(ref PropVariant pvar);
 
         private void ShowToastNotification(string title, string message)
         {
+            // Queue rapid toasts instead of hiding the previous banner
+            // instantly. A new banner is only shown when at least 4 seconds
+            // have passed since the last banner, otherwise it is queued
+            // (exact duplicates are merged) and shown later in order.
+            // This keeps a notification the user has not seen yet from
+            // being erased by the next one a second later, and avoids
+            // Windows throttling a burst of toasts.
             lock (toastNotificationLock)
             {
                 if (!toastWarmUpAttempted)
                 {
                     WarmUpToastNotifications();
                 }
+                System.DateTime nowUtc = System.DateTime.UtcNow;
+                if (lastToastNotification != null && (nowUtc - toastLastShownUtc).TotalMilliseconds < ToastMinimumBannerIntervalMs)
+                {
+                    bool duplicate = false;
+                    foreach (System.Tuple<string, string> pending in toastPendingQueue)
+                    {
+                        if (pending.Item1 == title && pending.Item2 == message) { duplicate = true; break; }
+                    }
+                    if (duplicate)
+                    {
+                        AppLogger.LogToGui("Notification: toast coalesced, duplicate queued notification merged", false);
+                        return;
+                    }
+                    toastPendingQueue.Enqueue(System.Tuple.Create(title, message));
+                    while (toastPendingQueue.Count > 5)
+                    {
+                        toastPendingQueue.Dequeue();
+                        AppLogger.LogToGui("Notification: toast queue full, oldest queued notification dropped", true);
+                    }
+                    AppLogger.LogToGui("Notification: toast queued, position " + toastPendingQueue.Count + ", previous banner still visible", false);
+                    ScheduleToastQueueDrain();
+                    return;
+                }
+                ShowToastNotificationNow(title, message);
+            }
+        }
+
+        private void ScheduleToastQueueDrain()
+        {
+            try
+            {
+                int delayMs;
+                lock (toastNotificationLock)
+                {
+                    if (toastPendingQueue.Count == 0) { return; }
+                    double elapsedMs = (System.DateTime.UtcNow - toastLastShownUtc).TotalMilliseconds;
+                    delayMs = (int)System.Math.Max(0, ToastMinimumBannerIntervalMs - elapsedMs);
+                }
+                if (toastQueueTimer == null)
+                {
+                    toastQueueTimer = new System.Threading.Timer(_ => DrainToastQueue(), null, delayMs, System.Threading.Timeout.Infinite);
+                }
+                else
+                {
+                    toastQueueTimer.Change(delayMs, System.Threading.Timeout.Infinite);
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLogger.LogToGui("Notification: toast queue timer failed, exception " + ex.GetType().Name + ": " + ex.Message, true);
+            }
+        }
+
+        private void DrainToastQueue()
+        {
+            System.Tuple<string, string> next = null;
+            lock (toastNotificationLock)
+            {
+                if (toastPendingQueue.Count == 0) { return; }
+                double elapsedMs = (System.DateTime.UtcNow - toastLastShownUtc).TotalMilliseconds;
+                if (elapsedMs < ToastMinimumBannerIntervalMs)
+                {
+                    ScheduleToastQueueDrain();
+                    return;
+                }
+                next = toastPendingQueue.Dequeue();
+            }
+            if (next != null)
+            {
+                ShowToastNotification(next.Item1, next.Item2);
+                lock (toastNotificationLock)
+                {
+                    if (toastPendingQueue.Count > 0) { ScheduleToastQueueDrain(); }
+                }
+            }
+        }
+
+        private void ShowToastNotificationNow(string title, string message)
+        {
+            lock (toastNotificationLock)
+            {
                 try
                 {
                     if (notifyIcon != null && !notifyIcon.IsCreated && Volatile.Read(ref shutdownRequested) == 0)
@@ -442,14 +546,25 @@ namespace DS4WinWPF.DS4Forms
                 {
                     var notifier = Microsoft.Toolkit.Uwp.Notifications.ToastNotificationManagerCompat.CreateToastNotifier();
                     try { if (lastToastNotification != null) { notifier.Hide(lastToastNotification); } } catch { }
-                    try { Microsoft.Toolkit.Uwp.Notifications.ToastNotificationManagerCompat.History.Clear(); } catch { }
+                    // 2026-10-30: do NOT History.Clear() here. Clearing removed
+                    // the previous notification from Action Center, so a user
+                    // who missed the banner had no record of it, and rapid
+                    // clear/show cycles could drop the new toast too. Hiding
+                    // the old banner is enough; the old entry stays in
+                    // Action Center, and the new toast has a unique tag so
+                    // Windows does not merge it into the old entry.
                     int counter = System.Threading.Interlocked.Increment(ref toastNotificationCounter);
-                    var content = new Microsoft.Toolkit.Uwp.Notifications.ToastContentBuilder().AddText(title).AddText(message).GetToastContent();
+                    var content = new Microsoft.Toolkit.Uwp.Notifications.ToastContentBuilder()
+                        .AddText(title)
+                        .AddText(message)
+                        .SetToastDuration(Microsoft.Toolkit.Uwp.Notifications.ToastDuration.Long)
+                        .GetToastContent();
                     var toast = new Windows.UI.Notifications.ToastNotification(content.GetXml());
                     toast.Tag = "ds4windows-" + counter.ToString(System.Globalization.CultureInfo.InvariantCulture);
                     toast.Group = "ds4windows";
                     notifier.Show(toast);
                     lastToastNotification = toast;
+                    toastLastShownUtc = System.DateTime.UtcNow;
                     AppLogger.LogToGui("Notification: toast shown, tag ds4windows-" + counter.ToString(System.Globalization.CultureInfo.InvariantCulture), false);
                     return;
                 }
@@ -460,11 +575,16 @@ namespace DS4WinWPF.DS4Forms
                 try
                 {
                     int counter = System.Threading.Interlocked.Increment(ref toastNotificationCounter);
-                    new Microsoft.Toolkit.Uwp.Notifications.ToastContentBuilder().AddText(title).AddText(message).Show(toast =>
+                    new Microsoft.Toolkit.Uwp.Notifications.ToastContentBuilder()
+                        .AddText(title)
+                        .AddText(message)
+                        .SetToastDuration(Microsoft.Toolkit.Uwp.Notifications.ToastDuration.Long)
+                        .Show(toast =>
                     {
                         toast.Tag = "ds4windows-" + counter.ToString(System.Globalization.CultureInfo.InvariantCulture);
                         toast.Group = "ds4windows";
                     });
+                    toastLastShownUtc = System.DateTime.UtcNow;
                     AppLogger.LogToGui("Notification: toast shown via fallback builder, tag ds4windows-" + counter.ToString(System.Globalization.CultureInfo.InvariantCulture), false);
                     return;
                 }
@@ -552,33 +672,41 @@ namespace DS4WinWPF.DS4Forms
                 SetShortcutAppUserModelId(shortcutPath, "DS4Windows");
                 AppLogger.LogToGui("Notification: toast shortcut AppUserModelID set to DS4Windows", false);
             }
-            catch (Exception ex) { AppLogger.LogToGui("Notification: toast shortcut AppUserModelID set failed, exception " + ex.GetType().Name + ", toasts will still be attempted", true); }
+            catch (Exception ex) { AppLogger.LogToGui("Notification: toast shortcut AppUserModelID set failed, exception " + ex.GetType().Name + ": " + ex.Message + ", toasts will still be attempted", true); }
         }
 
         private void SetShortcutAppUserModelId(string shortcutPath, string appUserModelId)
         {
+            // 2026-10-30 root cause: the previous code used the truncated
+            // GUID "9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F" (last segment 11
+            // digits, not 12), so new Guid() threw FormatException before
+            // any property was ever set. The correct PKEY_AppUserModel_ID
+            // format ID, per Microsoft, is
+            // 9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3, propID 5.
+            // A second cause, found by testing on the PC: opening the
+            // property store with flags 0 is read-only, and SetValue then
+            // fails with STG_E_ACCESSDENIED. GPS_READWRITE (2) is required.
+            // This method now uses a proper PropVariant struct, not manual
+            // IntPtr writes, and logs the full exception message, not
+            // just its type, so a future failure is diagnosable.
+            // Stable AUMID: the same string "DS4Windows" on every run,
+            // not a generated AUMID per run. The NotifyIconGeneratedAumid_*
+            // entries in Windows notification settings are H.NotifyIcon
+            // balloon IDs, not this toast AUMID, and are not used here.
             System.Guid iid = new System.Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
-            SHGetPropertyStoreFromParsingName(shortcutPath, System.IntPtr.Zero, 0, ref iid, out IPropertyStore store);
-            System.IntPtr pv = System.IntPtr.Zero;
+            SHGetPropertyStoreFromParsingName(shortcutPath, System.IntPtr.Zero, 2, ref iid, out IPropertyStore store);
+            PropVariant pv = new PropVariant();
             try
             {
-                pv = System.Runtime.InteropServices.Marshal.AllocCoTaskMem(16);
-                System.Runtime.InteropServices.Marshal.WriteInt16(pv, 0, 31);
-                System.Runtime.InteropServices.Marshal.WriteInt16(pv, 2, 0);
-                System.Runtime.InteropServices.Marshal.WriteInt16(pv, 4, 0);
-                System.Runtime.InteropServices.Marshal.WriteInt16(pv, 6, 0);
-                System.Runtime.InteropServices.Marshal.WriteIntPtr(pv, 8, System.Runtime.InteropServices.Marshal.StringToCoTaskMemUni(appUserModelId));
-                PropertyKey key = new PropertyKey { fmtid = new System.Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F"), pid = 5 };
-                store.SetValue(ref key, pv);
+                pv.vt = 31; // VT_LPWSTR
+                pv.pointer = System.Runtime.InteropServices.Marshal.StringToCoTaskMemUni(appUserModelId);
+                PropertyKey key = new PropertyKey { fmtid = new System.Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), pid = 5 };
+                store.SetValue(ref key, ref pv);
                 store.Commit();
             }
             finally
             {
-                if (pv != System.IntPtr.Zero)
-                {
-                    try { PropVariantClear(pv); } catch { }
-                    System.Runtime.InteropServices.Marshal.FreeCoTaskMem(pv);
-                }
+                try { PropVariantClear(ref pv); } catch { }
                 if (store != null) { System.Runtime.InteropServices.Marshal.ReleaseComObject(store); }
             }
         }
