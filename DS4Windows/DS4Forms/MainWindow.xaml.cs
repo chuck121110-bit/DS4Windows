@@ -394,6 +394,8 @@ namespace DS4WinWPF.DS4Forms
         private System.Threading.Timer toastQueueTimer;
         private const int ToastMinimumBannerIntervalMs = 4000;
         private bool toastWarmUpAttempted;
+        private string toastIconPngPath;
+        private bool toastIconPngAttempted;
         private System.Windows.Threading.DispatcherTimer trayIconRetryTimer;
         private int trayIconRetryAttempts;
         // Notification fix, 2026-10-30: background / tray notifications.
@@ -433,6 +435,10 @@ namespace DS4WinWPF.DS4Forms
         private static extern void SHGetPropertyStoreFromParsingName(string pszPath, System.IntPtr pbc, uint flags, ref System.Guid riid, out IPropertyStore ppv);
         [System.Runtime.InteropServices.DllImport("ole32.dll", PreserveSig = false)]
         private static extern void PropVariantClear(ref PropVariant pvar);
+        [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        private static extern uint ExtractIconEx(string lpszFile, int nIconIndex, out System.IntPtr phiconLarge, out System.IntPtr phiconSmall, uint nIcons);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool DestroyIcon(System.IntPtr hIcon);
 
         private void ShowToastNotification(string title, string message)
         {
@@ -546,26 +552,52 @@ namespace DS4WinWPF.DS4Forms
                 {
                     var notifier = Microsoft.Toolkit.Uwp.Notifications.ToastNotificationManagerCompat.CreateToastNotifier();
                     try { if (lastToastNotification != null) { notifier.Hide(lastToastNotification); } } catch { }
-                    // 2026-10-30: do NOT History.Clear() here. Clearing removed
-                    // the previous notification from Action Center, so a user
-                    // who missed the banner had no record of it, and rapid
-                    // clear/show cycles could drop the new toast too. Hiding
-                    // the old banner is enough; the old entry stays in
-                    // Action Center, and the new toast has a unique tag so
-                    // Windows does not merge it into the old entry.
+                    // 2026-10-30 replace-not-stack: History.Clear() here, at
+                    // show time only, after the 4 second queue spacing. That
+                    // removes the previous Action Center entry, so the new
+                    // toast is the sole DS4 entry and does not stack. Clearing
+                    // at arrival time was the old bug: it erased a banner
+                    // that had just arrived. Clearing at show time, after
+                    // spacing, is the replace behavior Chuck asked for.
+                    // A unique tag is still required: a constant tag update
+                    // merges into the old entry and dismisses the banner
+                    // without popping a new one, which was the Oct 29 bug.
+                    try
+                    {
+                        Microsoft.Toolkit.Uwp.Notifications.ToastNotificationManagerCompat.History.Clear();
+                        AppLogger.LogToGui("Notification: toast replacing previous, history cleared", false);
+                    }
+                    catch (Exception clearEx)
+                    {
+                        AppLogger.LogToGui("Notification: toast history clear failed, exception " + clearEx.GetType().Name, true);
+                    }
                     int counter = System.Threading.Interlocked.Increment(ref toastNotificationCounter);
-                    var content = new Microsoft.Toolkit.Uwp.Notifications.ToastContentBuilder()
+                    string toastIconPath = EnsureToastIconPng();
+                    bool toastIconApplied = false;
+                    var toastBuilder = new Microsoft.Toolkit.Uwp.Notifications.ToastContentBuilder()
                         .AddText(title)
                         .AddText(message)
-                        .SetToastDuration(Microsoft.Toolkit.Uwp.Notifications.ToastDuration.Long)
-                        .GetToastContent();
+                        .SetToastDuration(Microsoft.Toolkit.Uwp.Notifications.ToastDuration.Long);
+                    if (!string.IsNullOrWhiteSpace(toastIconPath) && System.IO.File.Exists(toastIconPath))
+                    {
+                        try
+                        {
+                            toastBuilder.AddAppLogoOverride(new System.Uri(toastIconPath, System.UriKind.Absolute));
+                            toastIconApplied = true;
+                        }
+                        catch (Exception iconEx)
+                        {
+                            AppLogger.LogToGui("Notification: toast icon override failed, exception " + iconEx.GetType().Name, true);
+                        }
+                    }
+                    var content = toastBuilder.GetToastContent();
                     var toast = new Windows.UI.Notifications.ToastNotification(content.GetXml());
                     toast.Tag = "ds4windows-" + counter.ToString(System.Globalization.CultureInfo.InvariantCulture);
                     toast.Group = "ds4windows";
                     notifier.Show(toast);
                     lastToastNotification = toast;
                     toastLastShownUtc = System.DateTime.UtcNow;
-                    AppLogger.LogToGui("Notification: toast shown, tag ds4windows-" + counter.ToString(System.Globalization.CultureInfo.InvariantCulture), false);
+                    AppLogger.LogToGui("Notification: toast shown, tag ds4windows-" + counter.ToString(System.Globalization.CultureInfo.InvariantCulture) + ", icon=" + (toastIconApplied ? "applied" : "unavailable"), false);
                     return;
                 }
                 catch (Exception ex)
@@ -575,11 +607,27 @@ namespace DS4WinWPF.DS4Forms
                 try
                 {
                     int counter = System.Threading.Interlocked.Increment(ref toastNotificationCounter);
-                    new Microsoft.Toolkit.Uwp.Notifications.ToastContentBuilder()
+                    try
+                    {
+                        var fallbackNotifier = Microsoft.Toolkit.Uwp.Notifications.ToastNotificationManagerCompat.CreateToastNotifier();
+                        try { if (lastToastNotification != null) { fallbackNotifier.Hide(lastToastNotification); } } catch { }
+                        Microsoft.Toolkit.Uwp.Notifications.ToastNotificationManagerCompat.History.Clear();
+                        AppLogger.LogToGui("Notification: toast replacing previous via fallback, history cleared", false);
+                    }
+                    catch (Exception clearEx)
+                    {
+                        AppLogger.LogToGui("Notification: fallback toast history clear failed, exception " + clearEx.GetType().Name, true);
+                    }
+                    string fallbackIconPath = EnsureToastIconPng();
+                    var fallbackBuilder = new Microsoft.Toolkit.Uwp.Notifications.ToastContentBuilder()
                         .AddText(title)
                         .AddText(message)
-                        .SetToastDuration(Microsoft.Toolkit.Uwp.Notifications.ToastDuration.Long)
-                        .Show(toast =>
+                        .SetToastDuration(Microsoft.Toolkit.Uwp.Notifications.ToastDuration.Long);
+                    if (!string.IsNullOrWhiteSpace(fallbackIconPath) && System.IO.File.Exists(fallbackIconPath))
+                    {
+                        try { fallbackBuilder.AddAppLogoOverride(new System.Uri(fallbackIconPath, System.UriKind.Absolute)); } catch { }
+                    }
+                    fallbackBuilder.Show(toast =>
                     {
                         toast.Tag = "ds4windows-" + counter.ToString(System.Globalization.CultureInfo.InvariantCulture);
                         toast.Group = "ds4windows";
@@ -629,8 +677,8 @@ namespace DS4WinWPF.DS4Forms
         private void WarmUpToastNotifications()
         {
             toastWarmUpAttempted = true;
-            try { EnsureToastShortcut(); }
-            catch (Exception ex) { AppLogger.LogToGui("Notification: toast shortcut warm-up failed, exception " + ex.GetType().Name + ", toasts will still be attempted", true); }
+            try { EnsureToastShortcut(); } catch (Exception ex) { AppLogger.LogToGui("Notification: toast shortcut warm-up failed, exception " + ex.GetType().Name + ", toasts will still be attempted", true); }
+            try { EnsureToastIconPng(); } catch (Exception ex) { AppLogger.LogToGui("Notification: toast icon warm-up failed, exception " + ex.GetType().Name, true); }
             try
             {
                 Microsoft.Toolkit.Uwp.Notifications.ToastNotificationManagerCompat.CreateToastNotifier();
@@ -663,9 +711,66 @@ namespace DS4WinWPF.DS4Forms
                 shortcut.TargetPath = exePath;
                 shortcut.WorkingDirectory = System.IO.Path.GetDirectoryName(exePath);
                 shortcut.Description = "DS4Windows";
-                shortcut.IconLocation = exePath;
+                shortcut.IconLocation = exePath + ",0";
                 shortcut.Save();
                 AppLogger.LogToGui("Notification: toast shortcut created in Start Menu", false);
+            }
+            else
+            {
+                // 2026-10-30 icon fix: IconLocation was only set on creation,
+                // so an old shortcut kept a blank or dead icon. Update it on
+                // every warm-up, never pointing at a Temp file.
+                try
+                {
+                    dynamic shell = System.Activator.CreateInstance(System.Type.GetTypeFromProgID("WScript.Shell"));
+                    dynamic shortcut = shell.CreateShortcut(shortcutPath);
+                    bool shortcutChanged = false;
+                    if (shortcut.TargetPath != exePath) { shortcut.TargetPath = exePath; shortcutChanged = true; }
+                    if (shortcut.WorkingDirectory != System.IO.Path.GetDirectoryName(exePath)) { shortcut.WorkingDirectory = System.IO.Path.GetDirectoryName(exePath); shortcutChanged = true; }
+                    if (shortcut.IconLocation != exePath + ",0") { shortcut.IconLocation = exePath + ",0"; shortcutChanged = true; }
+                    if (shortcutChanged)
+                    {
+                        shortcut.Save();
+                        AppLogger.LogToGui("Notification: toast shortcut icon updated in Start Menu", false);
+                    }
+                    else
+                    {
+                        AppLogger.LogToGui("Notification: toast shortcut already correct in Start Menu", false);
+                    }
+                }
+                catch (Exception shortcutEx)
+                {
+                    AppLogger.LogToGui("Notification: toast shortcut icon update failed, exception " + shortcutEx.GetType().Name, true);
+                }
+            }
+            // 2026-10-30 icon fix: the old Programs shortcut pointed at a
+            // dead install, C:\ProgramData\ds4windows-3-3-3\DS4Windows\DS4Windows.exe,
+            // with IconLocation ",0", which is the blank page icon Windows
+            // showed for DS4 toasts. Update it in place to the current exe,
+            // do not delete it, so Start Menu still has the entry.
+            try
+            {
+                string programsShortcutPath = System.IO.Path.Combine(programsFolder, "Programs", "DS4Windows.lnk");
+                if (System.IO.File.Exists(programsShortcutPath))
+                {
+                    dynamic shell = System.Activator.CreateInstance(System.Type.GetTypeFromProgID("WScript.Shell"));
+                    dynamic shortcut = shell.CreateShortcut(programsShortcutPath);
+                    bool programsChanged = false;
+                    if (shortcut.TargetPath != exePath || !System.IO.File.Exists((string)shortcut.TargetPath)) { shortcut.TargetPath = exePath; programsChanged = true; }
+                    if (shortcut.IconLocation != exePath + ",0") { shortcut.IconLocation = exePath + ",0"; programsChanged = true; }
+                    if (programsChanged)
+                    {
+                        shortcut.WorkingDirectory = System.IO.Path.GetDirectoryName(exePath);
+                        shortcut.Description = "DS4Windows";
+                        shortcut.Save();
+                        try { SetShortcutAppUserModelId(programsShortcutPath, "DS4Windows"); } catch { }
+                        AppLogger.LogToGui("Notification: toast Programs shortcut fixed to current exe", false);
+                    }
+                }
+            }
+            catch (Exception programsEx)
+            {
+                AppLogger.LogToGui("Notification: toast Programs shortcut fix failed, exception " + programsEx.GetType().Name, true);
             }
             try
             {
@@ -708,6 +813,80 @@ namespace DS4WinWPF.DS4Forms
             {
                 try { PropVariantClear(ref pv); } catch { }
                 if (store != null) { System.Runtime.InteropServices.Marshal.ReleaseComObject(store); }
+            }
+        }
+
+        private string EnsureToastIconPng()
+        {
+            // 2026-10-30 icon fix: toast header icon must not come from a
+            // Temp generated PNG that cleanup can delete, and must not come
+            // from the dead Programs shortcut. Extract the installed exe
+            // icon once, save it as a PNG in AppData\DS4Windows, which is
+            // not Temp and is not cleaned by the nightly Temp cleanup, and
+            // reuse it until the exe is newer than the PNG. WPF imaging
+            // only, no System.Drawing dependency. Never throws: a missing
+            // icon falls back to the shortcut icon, toasts still show.
+            if (toastIconPngAttempted && !string.IsNullOrWhiteSpace(toastIconPngPath) && System.IO.File.Exists(toastIconPngPath))
+            {
+                return toastIconPngPath;
+            }
+            toastIconPngAttempted = true;
+            try
+            {
+                string exePath;
+                try { exePath = Global.exelocation; }
+                catch { exePath = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName; }
+                if (string.IsNullOrWhiteSpace(exePath) || !System.IO.File.Exists(exePath))
+                {
+                    AppLogger.LogToGui("Notification: toast icon unavailable, exe path unavailable", true);
+                    return null;
+                }
+                string appDataFolder = System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData);
+                string ds4Folder = System.IO.Path.Combine(appDataFolder, "DS4Windows");
+                System.IO.Directory.CreateDirectory(ds4Folder);
+                string pngPath = System.IO.Path.Combine(ds4Folder, "DS4Windows-toast-icon.png");
+                bool needPng = !System.IO.File.Exists(pngPath) || System.IO.File.GetLastWriteTimeUtc(exePath) > System.IO.File.GetLastWriteTimeUtc(pngPath);
+                if (needPng)
+                {
+                    System.IntPtr largeIcon = System.IntPtr.Zero;
+                    System.IntPtr smallIcon = System.IntPtr.Zero;
+                    uint iconCount = ExtractIconEx(exePath, 0, out largeIcon, out smallIcon, 1);
+                    System.IntPtr iconHandle = largeIcon != System.IntPtr.Zero ? largeIcon : smallIcon;
+                    if (iconHandle == System.IntPtr.Zero || iconCount == 0)
+                    {
+                        AppLogger.LogToGui("Notification: toast icon extraction failed, no icon from exe", true);
+                        return null;
+                    }
+                    try
+                    {
+                        var bitmapSource = System.Windows.Interop.Imaging.CreateBitmapSourceFromHIcon(iconHandle, System.Windows.Int32Rect.Empty, System.Windows.Media.Imaging.BitmapSizeOptions.FromEmptyOptions());
+                        var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                        encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmapSource));
+                        using (var stream = System.IO.File.Create(pngPath))
+                        {
+                            encoder.Save(stream);
+                        }
+                    }
+                    finally
+                    {
+                        try { if (largeIcon != System.IntPtr.Zero) { DestroyIcon(largeIcon); } } catch { }
+                        try { if (smallIcon != System.IntPtr.Zero && smallIcon != largeIcon) { DestroyIcon(smallIcon); } } catch { }
+                    }
+                    long pngSize = new System.IO.FileInfo(pngPath).Length;
+                    AppLogger.LogToGui("Notification: toast icon png created, size " + pngSize + " bytes", false);
+                }
+                else
+                {
+                    long pngSize = new System.IO.FileInfo(pngPath).Length;
+                    AppLogger.LogToGui("Notification: toast icon png already present, size " + pngSize + " bytes", false);
+                }
+                toastIconPngPath = pngPath;
+                return pngPath;
+            }
+            catch (Exception ex)
+            {
+                AppLogger.LogToGui("Notification: toast icon png failed, exception " + ex.GetType().Name + ": " + ex.Message, true);
+                return null;
             }
         }
 
