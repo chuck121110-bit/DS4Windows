@@ -109,6 +109,8 @@ namespace DS4Windows.InputDevices
         private long version = 1;
         private bool batteryCheckLatchActive = false;
         private DateTime batteryCheckLatchUntil = DateTime.MinValue;
+        private bool profileSwitchLedHoldActive = false;
+        private DateTime profileSwitchLedHoldUntil = DateTime.MinValue;
 
         internal DualSensePhysicalOutputSnapshot ReadLatest()
         {
@@ -549,6 +551,14 @@ namespace DS4Windows.InputDevices
                     }
                     batteryCheckLatchActive = false;
                 }
+                if (!value && profileSwitchLedHoldActive)
+                {
+                    if (DateTime.UtcNow < profileSwitchLedHoldUntil)
+                    {
+                        return false;
+                    }
+                    profileSwitchLedHoldActive = false;
+                }
                 return PublishLocked(latest with
                 {
                     NativeGameLightbarOwnershipReleased = value,
@@ -592,6 +602,48 @@ namespace DS4Windows.InputDevices
                     return true;
                 }
                 batteryCheckLatchActive = false;
+                return false;
+            }
+        }
+
+        // Profile switch LED hold: same ownership protection as the
+        // BatteryCheck latch, but for a profile switch burst. While
+        // active, a native game packet may not reclaim lightbar
+        // ownership, so the new profile/custom color is not
+        // immediately overwritten by a running game (often black).
+        // It does not change any other native state, and it expires
+        // on its own, after which a running game may reclaim again.
+        internal void BeginProfileSwitchLedHold(TimeSpan duration)
+        {
+            lock (syncRoot)
+            {
+                profileSwitchLedHoldActive = true;
+                profileSwitchLedHoldUntil = DateTime.UtcNow + duration;
+                latest = latest with
+                {
+                    NativeGameLightbarOwnershipReleased = true,
+                };
+                version++;
+            }
+        }
+
+        internal void EndProfileSwitchLedHold()
+        {
+            lock (syncRoot)
+            {
+                profileSwitchLedHoldActive = false;
+            }
+        }
+
+        internal bool IsProfileSwitchLedHoldActive()
+        {
+            lock (syncRoot)
+            {
+                if (profileSwitchLedHoldActive && DateTime.UtcNow < profileSwitchLedHoldUntil)
+                {
+                    return true;
+                }
+                profileSwitchLedHoldActive = false;
                 return false;
             }
         }
