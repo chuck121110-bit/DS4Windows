@@ -3287,6 +3287,14 @@ namespace DS4Windows
 
         public virtual bool IsBatteryCheckLatchActive() => false;
 
+        // Profile switch LED hold hooks. No-op here; DualSense
+        // overrides these to use its physical output mailbox.
+        public virtual void BeginProfileSwitchLedHold(TimeSpan duration) { }
+
+        public virtual void EndProfileSwitchLedHold() { }
+
+        public virtual bool IsProfileSwitchLedHoldActive() => false;
+
         public ref DS4LightbarState GetLightbarStateRef()
         {
             return ref currentHap.lightbarState;
