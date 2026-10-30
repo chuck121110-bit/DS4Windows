@@ -5310,6 +5310,12 @@ namespace DS4Windows
         private bool[] charging = new bool[MAX_DS4_CONTROLLER_COUNT] { false, false, false, false, false, false, false, false };
         private string[] tempStrings = new string[MAX_DS4_CONTROLLER_COUNT] { string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty };
         private DateTime[] gameBarHomeButtonIgnoreUntilUtc = new DateTime[MAX_DS4_CONTROLLER_COUNT];
+        // 2026-10-30 PS hold: track a PS hold per controller so Guide output
+        // can be suppressed after a hold, without touching raw input.
+        private DateTime[] psHoldGuideSuppressStartUtc = new DateTime[MAX_DS4_CONTROLLER_COUNT];
+        private bool[] psHoldGuideSuppressed = new bool[MAX_DS4_CONTROLLER_COUNT];
+        private bool[] psHoldGuideSuppressLogged = new bool[MAX_DS4_CONTROLLER_COUNT];
+        private const int PsHoldGuideSuppressMs = 500;
         private readonly OutputDevice[] gameBarCompatibilityOutputDevices = new OutputDevice[MAX_DS4_CONTROLLER_COUNT];
         private readonly int[] gameBarCompatibilityRoutingActive = new int[MAX_DS4_CONTROLLER_COUNT];
         private readonly DateTime[] gameBarCompatibilityNextRetryUtc = new DateTime[MAX_DS4_CONTROLLER_COUNT];
@@ -5619,6 +5625,61 @@ namespace DS4Windows
             // Profiles that do not request the modern compatibility route use
             // their normal Home mapping. There is deliberately no legacy
             // profile-switch fallback here.
+        }
+
+        private void CheckPsHoldGuideSuppressor(int ind, DS4State cState)
+        {
+            // 2026-10-30 PS hold volume panel fix. Diagnosis: DS4 passes PS
+            // through as Guide to the virtual Xbox controller (ScpUtil
+            // DS4Controls.PS -> X360Controls.Guide, VIIPER XboxOne Guide
+            // bit), and as PS to a virtual DualSense, for as long as PS is
+            // held. Steam, Windows Game Bar, and other Guide handlers react
+            // to a held Guide by opening an overlay, whose Audio/volume
+            // widget is the volume panel Chuck reports. DS4's own Game Bar
+            // compatibility is OFF in all three of his profiles
+            // (GameBarControllerCompatibility False), and Windows
+            // UseNexusForGamebarEnabled is 0, so DS4's Win+G path is not
+            // the trigger; continuous Guide forwarding is.
+            // This method runs AFTER Mapping.MapCustom in the report loop,
+            // so raw PS is still seen by special actions and PS/L3, PS/R3,
+            // and PS/Options chords still fire. Only the mapped output
+            // state passed to ConvertandSendReport is cleared, and only
+            // after a 500ms hold, which matches DS4's own hold definition.
+            // A quick tap under 500ms still forwards Guide, so a game PS
+            // menu on tap still works. A hold over 500ms stops forwarding
+            // Guide until release, so no hold-triggered overlay or volume
+            // panel can open. Holding PS to open a menu on hold will no
+            // longer work; that is the intended tradeoff, stated plainly.
+            if (ind < 0 || ind >= MAX_DS4_CONTROLLER_COUNT || cState == null)
+            {
+                return;
+            }
+            if (!cState.PS)
+            {
+                psHoldGuideSuppressStartUtc[ind] = DateTime.MinValue;
+                psHoldGuideSuppressed[ind] = false;
+                psHoldGuideSuppressLogged[ind] = false;
+                return;
+            }
+            DateTime now = DateTime.UtcNow;
+            if (psHoldGuideSuppressStartUtc[ind] == DateTime.MinValue)
+            {
+                psHoldGuideSuppressStartUtc[ind] = now;
+                return;
+            }
+            if (!psHoldGuideSuppressed[ind] && (now - psHoldGuideSuppressStartUtc[ind]).TotalMilliseconds >= PsHoldGuideSuppressMs)
+            {
+                psHoldGuideSuppressed[ind] = true;
+                if (!psHoldGuideSuppressLogged[ind])
+                {
+                    psHoldGuideSuppressLogged[ind] = true;
+                    AppLogger.LogToGui("PS hold: Guide output suppressed for controller " + (ind + 1) + " after 500ms hold, preventing volume/GameBar panel", false);
+                }
+            }
+            if (psHoldGuideSuppressed[ind])
+            {
+                cState.PS = false;
+            }
         }
 
         private void UpdateGameBarCompatibilityOutputs(bool gameBarVisible)
@@ -6455,6 +6516,10 @@ namespace DS4Windows
                         }
                     }
 
+                    // 2026-10-30: PS hold suppressor, after MapCustom and
+                    // after the mapped state is assigned to cState above, so
+                    // special actions already saw raw PS. See method comment.
+                    CheckPsHoldGuideSuppressor(ind, cState);
                     OutputDevice reportOutput = GetReportOutputDevice(ind);
                     reportOutput?.ConvertandSendReport(cState, ind);
                     //testNewReport(ref x360reports[ind], cState, ind);
