@@ -1574,6 +1574,28 @@ namespace DS4Windows
                         Global.IsCurrentProfileSwitchRevision(device,
                             revision))
                     {
+                        // The new profile's settings are published by
+                        // now, so GetProfileOrCustomColor reflects the
+                        // newly selected profile, not the old one.
+                        // Force its custom or profile color, even if a
+                        // running game owns the lightbar. Deduped
+                        // against the after-load hook in ControlService.
+                        if (loaded)
+                        {
+                            try
+                            {
+                                if (ctrl != null && ctrl.DS4Controllers != null &&
+                                    device >= 0 && device < ctrl.DS4Controllers.Length)
+                                {
+                                    DS4Device switchedDevice = ctrl.DS4Controllers[device];
+                                    if (switchedDevice != null)
+                                    {
+                                        DS4LightBar.ForceProfileSwitchLedReset(switchedDevice, device, profileName);
+                                    }
+                                }
+                            }
+                            catch { }
+                        }
                         afterLoad?.Invoke(loaded);
                     }
                 }
