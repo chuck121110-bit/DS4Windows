@@ -3278,6 +3278,15 @@ namespace DS4Windows
             currentHap.dirty = true;
         }
 
+        // BatteryCheck latch hooks. The base implementation is a no-op;
+        // DualSense overrides these to use its physical output mailbox,
+        // so a native game cannot reclaim lightbar ownership mid-latch.
+        public virtual void BeginBatteryCheckLatch(TimeSpan duration) { }
+
+        public virtual void EndBatteryCheckLatch() { }
+
+        public virtual bool IsBatteryCheckLatchActive() => false;
+
         public ref DS4LightbarState GetLightbarStateRef()
         {
             return ref currentHap.lightbarState;
