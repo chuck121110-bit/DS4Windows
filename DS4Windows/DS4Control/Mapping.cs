@@ -5332,13 +5332,16 @@ namespace DS4Windows
                                         if (!actionDone[index].dev[device])
                                         {
                                             lastColor[device] = d.LightBarColor;
-                                            AppLogger.LogToGui("BatteryCheck: forcing LED to battery color for controller " + (device + 1) + " (battery " + d.Battery + "%)", false);
                                         }
                                         DS4Color empty = new DS4Color(byte.Parse(dets[3]), byte.Parse(dets[4]), byte.Parse(dets[5]));
                                         DS4Color full = new DS4Color(byte.Parse(dets[6]), byte.Parse(dets[7]), byte.Parse(dets[8]));
                                         DS4Color trans = getTransitionedColor(ref empty, ref full, d.Battery);
                                         fadetimer[device] = 100;
-                                        try { DS4LightBar.ForceLightbarColor(d, device, trans); } catch { }
+                                        // Latch: hold the battery color for 3 seconds from
+                                        // the last trigger tick, even if the trigger was
+                                        // only a brief pulse. Refresh extends the latch
+                                        // while held, so it cannot expire mid-hold.
+                                        try { DS4LightBar.RefreshBatteryCheckLatch(d, device, trans); } catch { }
                                     }
                                 }
                                 actionDone[index].dev[device] = true;
@@ -5389,18 +5392,21 @@ namespace DS4Windows
                                 if (actionDone[index].dev[device])
                                 {
                                     fadetimer[device] = 0;
-                                    /*if (prevFadetimer[device] == fadetimer[device])
+                                    if (DS4LightBar.IsBatteryCheckLatchActive(device))
                                     {
-                                        prevFadetimer[device] = 0;
-                                        fadetimer[device] = 0;
+                                        // Do not restore on release while the latch
+                                        // is active. Latch expiry in DS4LightBar
+                                        // restores profile/custom color after 3s.
+                                        AppLogger.LogToGui("BatteryCheck trigger released, latch holding battery color for controller " + (device + 1), false);
                                     }
                                     else
-                                        prevFadetimer[device] = fadetimer[device];*/
-                                    DS4LightBar.forcelight[device] = false;
-                                    DS4Device rd = ctrl.DS4Controllers[device];
-                                    if (rd != null)
                                     {
-                                        try { DS4LightBar.ForceProfileLightbarColor(rd, device); AppLogger.LogToGui("BatteryCheck: restoring LED to profile/custom color for controller " + (device + 1), false); } catch { }
+                                        DS4LightBar.forcelight[device] = false;
+                                        DS4Device rd = ctrl.DS4Controllers[device];
+                                        if (rd != null)
+                                        {
+                                            try { DS4LightBar.ForceProfileLightbarColor(rd, device); AppLogger.LogToGui("BatteryCheck: restoring LED to profile/custom color for controller " + (device + 1), false); } catch { }
+                                        }
                                     }
                                     actionDone[index].dev[device] = false;
                                 }
