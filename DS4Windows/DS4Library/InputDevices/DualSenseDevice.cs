@@ -3013,6 +3013,22 @@ namespace DS4Windows.InputDevices
             QueuePhysicalOutputUpdate();
         }
 
+        public override void BeginBatteryCheckLatch(TimeSpan duration)
+        {
+            physicalOutputStateMailbox.BeginBatteryCheckLatch(duration);
+            QueuePhysicalOutputUpdate();
+        }
+
+        public override void EndBatteryCheckLatch()
+        {
+            physicalOutputStateMailbox.EndBatteryCheckLatch();
+        }
+
+        public override bool IsBatteryCheckLatchActive()
+        {
+            return physicalOutputStateMailbox.IsBatteryCheckLatchActive();
+        }
+
         public override void ForceLightbarColor(DS4Color color)
         {
             DS4LightbarState lightbar = new DS4LightbarState
@@ -4298,6 +4314,10 @@ namespace DS4Windows.InputDevices
 
             int ledOwnershipUpdate = GetNativeGameLedOwnershipUpdate(report,
                 1);
+            if (physicalOutputStateMailbox.IsBatteryCheckLatchActive())
+            {
+                ledOwnershipUpdate = -1;
+            }
             DualSensePhysicalOutputSnapshot outputState =
                 physicalOutputStateMailbox.ReadLatest();
             outputState = outputState with { DsxNativeState = outputState.DsxNativeState.ObserveNative(nativeUnderlay, 1) };
@@ -6646,6 +6666,10 @@ namespace DS4Windows.InputDevices
             int ledOwnershipUpdate = hasNativeGameState ?
                 GetNativeGameLedOwnershipUpdate(report,
                     offset + BluetoothCombinedStateOffset) : 0;
+            if (physicalOutputStateMailbox.IsBatteryCheckLatchActive())
+            {
+                ledOwnershipUpdate = -1;
+            }
             bool releasedOwnership = ledOwnershipUpdate < 0;
             if (ledOwnershipUpdate != 0)
             {
@@ -6785,6 +6809,10 @@ namespace DS4Windows.InputDevices
 
             int ledOwnershipUpdate =
                 GetNativeGameLedOwnershipUpdate(report, offset + 1);
+            if (physicalOutputStateMailbox.IsBatteryCheckLatchActive())
+            {
+                ledOwnershipUpdate = -1;
+            }
             bool releasedOwnership = ledOwnershipUpdate < 0;
             DualSensePhysicalOutputSnapshot outputState =
                 physicalOutputStateMailbox.ReadLatest();
