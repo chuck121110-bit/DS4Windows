@@ -472,27 +472,95 @@ namespace DS4WinWPF.DS4Forms
             }
         }
 
+        // 2026-10-30, only two notification changes, nothing else:
+        // Fix 1, immediate swap, no queue: clear the current notification,
+        // then show the new one in the same dispatcher call. If the tray
+        // icon is not created yet, keep only the latest pending item.
+        // Fix 2, no focus gate: the old !IsActive gate dropped every
+        // notification while DS4 was minimized to tray, which is its
+        // normal state, until the window was opened, focused, and closed
+        // once. The gate is removed. The Notifications setting gate stays.
+        private string pendingNotifMessage = null;
+        private bool pendingNotifWarning = false;
+        private bool pendingNotifExists = false;
+        private bool trayIconRetryRunning = false;
+
+        // WinRT toast swap, 2026-10-30: balloon tips on Windows 10/11
+        // are converted to toasts and queue in Action Center, and
+        // ClearNotifications only recreates the tray icon, it cannot
+        // remove a toast history entry. A constant Tag+Group toast
+        // replaces the single entry in banner and Action Center.
+        private const string ToastTag = "ds4windows";
+        private const string ToastGroup = "ds4windows";
+        private Windows.UI.Notifications.ToastNotification lastToast = null;
+
+        private void ShowTrayNotificationSwap(string message, bool warning)
+        {
+            // Tray icon is still required for DS4's tray presence, and
+            // for the fallback below, but the toast itself does not
+            // require a focused window.
+            if (notifyIcon == null || !notifyIcon.IsCreated)
+            {
+                pendingNotifMessage = message;
+                pendingNotifWarning = warning;
+                pendingNotifExists = true;
+                EnsureTrayIconCreated();
+                return;
+            }
+            bool toastShown = false;
+            try
+            {
+                var notifier = CommunityToolkit.WinUI.Notifications.ToastNotificationManagerCompat.CreateToastNotifier();
+                if (lastToast != null)
+                {
+                    try { notifier.Hide(lastToast); } catch { }
+                }
+                try { CommunityToolkit.WinUI.Notifications.ToastNotificationManagerCompat.History.Remove(ToastTag, ToastGroup); } catch { }
+                var content = new CommunityToolkit.WinUI.Notifications.ToastContentBuilder()
+                    .AddText(TrayIconViewModel.ballonTitle)
+                    .AddText(message)
+                    .GetToastContent();
+                var toast = new Windows.UI.Notifications.ToastNotification(content.GetXml())
+                {
+                    Tag = ToastTag,
+                    Group = ToastGroup,
+                    SuppressPopup = false,
+                    ExpirationTime = System.DateTimeOffset.Now.AddMinutes(30),
+                };
+                lastToast = toast;
+                notifier.Show(toast);
+                toastShown = true;
+            }
+            catch
+            {
+                // Fall back to balloon if toast is unavailable, so a
+                // notification is never silently lost.
+                toastShown = false;
+            }
+            if (!toastShown)
+            {
+                try { notifyIcon.ClearNotifications(); } catch { }
+                try
+                {
+                    notifyIcon.ShowNotification(TrayIconViewModel.ballonTitle,
+                        message, !warning ? H.NotifyIcon.Core.NotificationIcon.Info :
+                        H.NotifyIcon.Core.NotificationIcon.Warning);
+                }
+                catch (System.InvalidOperationException)
+                {
+                    // Ignore
+                }
+            }
+        }
+
         private void ShowNotification(object sender, DS4Windows.DebugEventArgs e)
         {
             Dispatcher.BeginInvoke((Action)(() =>
             {
-
-                if (!IsActive && (Global.Notifications == 2 ||
-                    (Global.Notifications == 1 && e.Warning)))
+                if (Global.Notifications == 2 ||
+                    (Global.Notifications == 1 && e.Warning))
                 {
-                    if (notifyIcon.IsCreated)
-                    {
-                        try
-                        {
-                            notifyIcon.ShowNotification(TrayIconViewModel.ballonTitle,
-                            e.Data, !e.Warning ? H.NotifyIcon.Core.NotificationIcon.Info :
-                            H.NotifyIcon.Core.NotificationIcon.Warning);
-                        }
-                        catch (System.InvalidOperationException)
-                        {
-                            // Ignore
-                        }
-                    }
+                    ShowTrayNotificationSwap(e.Data, e.Warning);
                 }
             }));
         }
@@ -582,7 +650,7 @@ Suspend support not enabled.", true);
 
         private void ControlServiceStarted(object sender, EventArgs e)
         {
-            if (Global.SwipeProfiles)
+            if (Global.SwipeProfiles || Global.PsBumperProfileSwitch)
             {
                 ChangeHotkeysStatus(true);
             }
@@ -877,8 +945,39 @@ Suspend support not enabled.", true);
             }
         }
 
+        // PS+bumpers edge detection, per controller slot
+        private bool[] psBumperPrevL1 = new bool[8];
+        private bool[] psBumperPrevR1 = new bool[8];
+
         private void ProcessProfileSwipeHotkeys()
         {
+            // PS+bumpers, same list and same Compute/Apply path as swipe.
+            // Runs even if swipe is off, as long as the PS+bumpers setting is on.
+            if (Global.PsBumperProfileSwitch)
+            {
+                foreach (CompositeDeviceModel item in conLvViewModel.ControllerCol)
+                {
+                    int dev = item.DevIndex;
+                    if (dev < 0 || dev >= 8) continue;
+                    if (Global.useTempProfile[dev]) continue;
+                    DS4State st = null;
+                    try { st = App.rootHub.getDS4State(dev); } catch { st = null; }
+                    if (st == null) { psBumperPrevL1[dev] = false; psBumperPrevR1[dev] = false; continue; }
+                    bool ps = st.PS;
+                    bool l1 = ps && st.L1;
+                    bool r1 = ps && st.R1;
+                    bool l1Edge = l1 && !psBumperPrevL1[dev];
+                    bool r1Edge = r1 && !psBumperPrevR1[dev];
+                    psBumperPrevL1[dev] = l1;
+                    psBumperPrevR1[dev] = r1;
+                    if (!l1Edge && !r1Edge) continue;
+                    bool forward = r1Edge && !l1Edge;
+                    if (l1Edge && r1Edge) continue;
+                    int targetIndex = ComputeSwipeProfileIndex(item, forward);
+                    ApplyProfileSelection(item, () => item.SelectAndApplyProfile(targetIndex));
+                }
+            }
+
             if (!Global.SwipeProfiles)
             {
                 return;
@@ -1029,11 +1128,13 @@ Suspend support not enabled.", true);
 
         private void ShowHotkeyNotification(string message)
         {
-            if (!IsActive && (Global.Notifications == 2))
+            Dispatcher.BeginInvoke((Action)(() =>
             {
-                notifyIcon.ShowNotification(TrayIconViewModel.ballonTitle,
-                    message, H.NotifyIcon.Core.NotificationIcon.Info);
-            }
+                if (Global.Notifications == 2)
+                {
+                    ShowTrayNotificationSwap(message, false);
+                }
+            }));
         }
 
         private void PrepareForServiceStop(object sender, EventArgs e)
@@ -1065,39 +1166,65 @@ Suspend support not enabled.", true);
 
         private async void EnsureTrayIconCreated()
         {
-            int[] retryDelaysMs = { 0, 250, 1000 };
-            Exception lastFailure = null;
-            foreach (int retryDelayMs in retryDelaysMs)
+            // Retry until the tray icon exists, not just 0/250/1000ms.
+            // At logon Explorer may not be ready in 1.25 seconds, and the
+            // old one-shot retry then dropped every notification until the
+            // window was opened, focused, and closed once. Only one retry
+            // loop runs at a time. When creation succeeds, flush only the
+            // latest pending notification, never a queue.
+            if (trayIconRetryRunning)
             {
-                if (retryDelayMs > 0)
+                return;
+            }
+            trayIconRetryRunning = true;
+            try
+            {
+                int[] retryDelaysMs = { 0, 250, 1000, 2000, 2000, 5000, 5000, 5000, 5000, 5000, 5000, 5000 };
+                Exception lastFailure = null;
+                foreach (int retryDelayMs in retryDelaysMs)
                 {
-                    await Task.Delay(retryDelayMs);
-                }
-
-                if (notifyIcon == null || Volatile.Read(ref shutdownRequested) != 0)
-                {
-                    return;
-                }
-
-                try
-                {
-                    if (!notifyIcon.IsCreated)
+                    if (retryDelayMs > 0)
                     {
-                        notifyIcon.ForceCreate(enablesEfficiencyMode: false);
+                        await Task.Delay(retryDelayMs);
                     }
 
-                    notifyIcon.ContextMenu = trayIconVM.ContextMenu;
-                    return;
+                    if (notifyIcon == null || Volatile.Read(ref shutdownRequested) != 0)
+                    {
+                        return;
+                    }
+
+                    try
+                    {
+                        if (!notifyIcon.IsCreated)
+                        {
+                            notifyIcon.ForceCreate(enablesEfficiencyMode: false);
+                        }
+
+                        notifyIcon.ContextMenu = trayIconVM.ContextMenu;
+                        if (pendingNotifExists)
+                        {
+                            string msg = pendingNotifMessage;
+                            bool warn = pendingNotifWarning;
+                            pendingNotifExists = false;
+                            pendingNotifMessage = null;
+                            ShowTrayNotificationSwap(msg, warn);
+                        }
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        lastFailure = ex;
+                    }
                 }
-                catch (Exception ex)
+
+                if (lastFailure != null)
                 {
-                    lastFailure = ex;
+                    AppLogger.LogToGui($"Tray icon creation failed: {lastFailure.Message}", true);
                 }
             }
-
-            if (lastFailure != null)
+            finally
             {
-                AppLogger.LogToGui($"Tray icon creation failed: {lastFailure.Message}", true);
+                trayIconRetryRunning = false;
             }
         }
 
@@ -3419,8 +3546,15 @@ Suspend support not enabled.", true);
 
         private void SwipeTouchCk_Click(object sender, RoutedEventArgs e)
         {
-            bool status = swipeTouchCk.IsChecked == true;
+            bool status = swipeTouchCk.IsChecked == true || Global.PsBumperProfileSwitch;
             ChangeHotkeysStatus(status);
+        }
+
+        private void PsBumperCk_Click(object sender, RoutedEventArgs e)
+        {
+            bool status = psBumperCk.IsChecked == true || Global.SwipeProfiles;
+            ChangeHotkeysStatus(status);
+            Global.Save();
         }
 
         private void EditProfBtn_Click(object sender, RoutedEventArgs e)

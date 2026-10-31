@@ -618,6 +618,13 @@
                                   Padding="8,2" Click="ConfigSwipeProfilesBtn_Click"
                                   ToolTip="Choose which profiles the two-finger swipe is allowed to switch between" />
                         </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="{StaticResource spaceMargin}">
+                            <CheckBox x:Name="psBumperCk" Content="Hold PS and press L1/R1 bumpers to switch profiles"
+                                  IsChecked="{Binding PsBumperSwitchProfile}"
+                                  ToolTip="Hold the PlayStation button and press the left bumper for the previous profile, or the right bumper for the next profile. Uses the same profile list as Config Swipe Profiles above."
+                                  Click="PsBumperCk_Click"
+                                  Style="{StaticResource BridgeDescribedCheckBoxStyle}" />
+                        </StackPanel>
                         <CheckBox x:Name="runAtStartCk" Content="{lex:Loc RunAtStartup}" Margin="{StaticResource spaceMargin}"
                               IsEnabled="{Binding CanChangeStartupPreference}"
                               IsChecked="{Binding RunAtStartup}"

@@ -137,6 +137,7 @@ internal sealed class GuardedNamedProfileLoad
                             return;
                         }
                         Global.ProfilePath[slot] = name;
+                        try { RememberedProfile.Save(slot, name); } catch { }
                         Global.tempprofilename[slot] = string.Empty;
                         Global.tempprofileDistance[slot] = false;
                         Global.useTempProfile[slot] = false;

@@ -353,6 +353,25 @@ namespace DS4WinWPF.DS4Control.DTOXml
             get; private set;
         } = BackingStore.DEFAULT_SWIPE_PROFILES;
 
+        [XmlIgnore]
+        public bool PsBumperProfileSwitch
+        {
+            get; private set;
+        } = false;
+
+        [XmlElement("PsBumperProfileSwitch")]
+        public string PsBumperProfileSwitchString
+        {
+            get => PsBumperProfileSwitch.ToString();
+            set
+            {
+                if (bool.TryParse(value, out bool temp))
+                {
+                    PsBumperProfileSwitch = temp;
+                }
+            }
+        }
+
         [XmlElement("SwipeProfiles")]
         public string SwipeProfilesString
         {
@@ -928,6 +947,7 @@ namespace DS4WinWPF.DS4Control.DTOXml
             ProfileChangedNotification = source.profileChangedNotification;
             DisconnectBTAtStop = source.disconnectBTAtStop;
             SwipeProfiles = source.swipeProfiles;
+            PsBumperProfileSwitch = source.psBumperProfileSwitch;
             SwipeProfileList = source.swipeProfileList != null
                 ? new List<string>(source.swipeProfileList)
                 : new List<string>();
@@ -1040,6 +1060,7 @@ namespace DS4WinWPF.DS4Control.DTOXml
             destination.profileChangedNotification = ProfileChangedNotification;
             destination.disconnectBTAtStop = DisconnectBTAtStop;
             destination.swipeProfiles = SwipeProfiles;
+            destination.psBumperProfileSwitch = PsBumperProfileSwitch;
             destination.swipeProfileList = SwipeProfileList != null
                 ? new List<string>(SwipeProfileList)
                 : new List<string>();

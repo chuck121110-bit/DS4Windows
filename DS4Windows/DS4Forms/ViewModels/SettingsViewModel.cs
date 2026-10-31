@@ -53,6 +53,10 @@ namespace DS4WinWPF.DS4Forms.ViewModels
         public bool SwipeTouchSwitchProfile { get => DS4Windows.Global.SwipeProfiles;
             set => DS4Windows.Global.SwipeProfiles = value; }
 
+        public bool PsBumperSwitchProfile { get => DS4Windows.Global.PsBumperProfileSwitch;
+            set => DS4Windows.Global.PsBumperProfileSwitch = value; }
+
+
         public bool AutomaticJoyConPairing
         {
             get => DS4Windows.Global.DeviceOptions.JoyConDeviceOpts.

@@ -3881,8 +3881,18 @@ namespace DS4Windows
                 }
                 else
                 {
-                    ProfilePath[index] = OlderProfilePath[index];
-                    Global.linkedProfileCheck[index] = false;
+                    string remembered = RememberedProfile.Load(index);
+                    if (!string.IsNullOrWhiteSpace(remembered) && File.Exists(Path.Combine(Global.appdatapath, "Profiles", remembered + ".xml")))
+                    {
+                        ProfilePath[index] = remembered;
+                        Global.OlderProfilePath[index] = remembered;
+                        Global.linkedProfileCheck[index] = false;
+                    }
+                    else
+                    {
+                        ProfilePath[index] = OlderProfilePath[index];
+                        Global.linkedProfileCheck[index] = false;
+                    }
                 }
 
                 // Now attempt to load requested profile and settings
@@ -7012,8 +7022,18 @@ namespace DS4Windows
                         }
                         else
                         {
-                            ProfilePath[slot] = OlderProfilePath[slot];
-                            Global.linkedProfileCheck[slot] = false;
+                            string remembered = RememberedProfile.Load(slot);
+                            if (!string.IsNullOrWhiteSpace(remembered) && File.Exists(Path.Combine(Global.appdatapath, "Profiles", remembered + ".xml")))
+                            {
+                                ProfilePath[slot] = remembered;
+                                Global.OlderProfilePath[slot] = remembered;
+                                Global.linkedProfileCheck[slot] = false;
+                            }
+                            else
+                            {
+                                ProfilePath[slot] = OlderProfilePath[slot];
+                                Global.linkedProfileCheck[slot] = false;
+                            }
                         }
 
                         lastPrepareDiagnostic = "profile-loading";

@@ -1574,6 +1574,19 @@ namespace DS4Windows
                         Global.IsCurrentProfileSwitchRevision(device,
                             revision))
                     {
+                        if (loaded)
+                        {
+                            try
+                            {
+                                string eff = tempProfile ? profileName : (string.IsNullOrEmpty(profileName) ? Global.ProfilePath[device] : profileName);
+                                if (!string.IsNullOrWhiteSpace(eff))
+                                {
+                                    RememberedProfile.Save(device, eff);
+                                    if (!tempProfile) Global.OlderProfilePath[device] = eff;
+                                }
+                            }
+                            catch { }
+                        }
                         afterLoad?.Invoke(loaded);
                     }
                 }

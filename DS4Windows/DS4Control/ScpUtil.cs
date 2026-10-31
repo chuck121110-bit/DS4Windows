@@ -1821,6 +1821,13 @@ namespace DS4Windows
             get { return m_Config.swipeProfiles; }
         }
 
+        // 2026-10-30 PS+bumpers profile scroll, same list as swipe.
+        public static bool PsBumperProfileSwitch
+        {
+            set { m_Config.psBumperProfileSwitch = value; }
+            get { return m_Config.psBumperProfileSwitch; }
+        }
+
         // Allow-list of profile names that the two-finger touchpad swipe may switch
         // between. An empty list means "no restriction" (cycle through all profiles).
         public static List<string> SwipeProfileList
@@ -4993,6 +5000,8 @@ namespace DS4Windows
 
         public const bool DEFAULT_SWIPE_PROFILES = true;
         public bool swipeProfiles = DEFAULT_SWIPE_PROFILES;
+        public const bool DEFAULT_PS_BUMPER_PROFILE_SWITCH = false;
+        public bool psBumperProfileSwitch = DEFAULT_PS_BUMPER_PROFILE_SWITCH;
         // Allow-list of profile names the two-finger touchpad swipe is permitted to
         // switch between. When empty, the swipe cycles through every profile (legacy
         // behaviour). When populated, only the listed profiles participate.
@@ -9568,6 +9577,8 @@ namespace DS4Windows
                     catch { missingSetting = true; }
                     try { Item = m_Xdoc.SelectSingleNode("/Profile/SwipeProfiles"); Boolean.TryParse(Item.InnerText, out swipeProfiles); }
                     catch { missingSetting = true; }
+                    try { Item = m_Xdoc.SelectSingleNode("/Profile/PsBumperProfileSwitch"); Boolean.TryParse(Item.InnerText, out psBumperProfileSwitch); }
+                    catch { missingSetting = true; }
                     //try { Item = m_Xdoc.SelectSingleNode("/Profile/UseDS4ForMapping"); Boolean.TryParse(Item.InnerText, out ds4Mapping); }
                     //catch { missingSetting = true; }
                     try { Item = m_Xdoc.SelectSingleNode("/Profile/QuickCharge"); Boolean.TryParse(Item.InnerText, out quickCharge); }
@@ -9949,6 +9960,7 @@ namespace DS4Windows
             XmlNode xmlNotifications = m_Xdoc.CreateNode(XmlNodeType.Element, "Notifications", null); xmlNotifications.InnerText = notifications.ToString(); rootElement.AppendChild(xmlNotifications);
             XmlNode xmlDisconnectBT = m_Xdoc.CreateNode(XmlNodeType.Element, "DisconnectBTAtStop", null); xmlDisconnectBT.InnerText = disconnectBTAtStop.ToString(); rootElement.AppendChild(xmlDisconnectBT);
             XmlNode xmlSwipeProfiles = m_Xdoc.CreateNode(XmlNodeType.Element, "SwipeProfiles", null); xmlSwipeProfiles.InnerText = swipeProfiles.ToString(); rootElement.AppendChild(xmlSwipeProfiles);
+            XmlNode xmlPsBumper = m_Xdoc.CreateNode(XmlNodeType.Element, "PsBumperProfileSwitch", null); xmlPsBumper.InnerText = psBumperProfileSwitch.ToString(); rootElement.AppendChild(xmlPsBumper);
             //XmlNode xmlDS4Mapping = m_Xdoc.CreateNode(XmlNodeType.Element, "UseDS4ForMapping", null); xmlDS4Mapping.InnerText = ds4Mapping.ToString(); rootElement.AppendChild(xmlDS4Mapping);
             XmlNode xmlQuickCharge = m_Xdoc.CreateNode(XmlNodeType.Element, "QuickCharge", null); xmlQuickCharge.InnerText = quickCharge.ToString(); rootElement.AppendChild(xmlQuickCharge);
             XmlNode xmlCloseMini = m_Xdoc.CreateNode(XmlNodeType.Element, "CloseMinimizes", null); xmlCloseMini.InnerText = closeMini.ToString(); rootElement.AppendChild(xmlCloseMini);

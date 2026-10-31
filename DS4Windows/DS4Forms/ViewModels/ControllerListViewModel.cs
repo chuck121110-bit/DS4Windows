@@ -656,14 +656,14 @@ namespace DS4WinWPF.DS4Forms.ViewModels
             }
 
             string prof = Global.ProfilePath[devIndex] = targetEntity.Name;
+            // 2026-10-30: slot fallback must follow last profile too, not stay
+            // stuck at Xbox One. Linked profiles still win on connect, remembered
+            // is next, Older is now last profile instead of the original slot default.
+            Global.OlderProfilePath[devIndex] = Global.ProfilePath[devIndex];
             if (LinkedProfile)
             {
                 Global.changeLinkedProfile(device.ProfileLinkId, Global.ProfilePath[devIndex]);
                 Global.SaveLinkedProfiles();
-            }
-            else
-            {
-                Global.OlderProfilePath[devIndex] = Global.ProfilePath[devIndex];
             }
 
             SelectedProfile = prof;
@@ -882,6 +882,10 @@ namespace DS4WinWPF.DS4Forms.ViewModels
                         (devIndex + 1).ToString(), profileName,
                         $"{device?.Battery ?? 0}");
                     AppLogger.LogToGui(prolog, false);
+                    // 2026-10-30: UI profile switches (swipe, PS+bumpers, tray, UI)
+                    // only logged to GUI, never to tray, so no toast fired.
+                    // Special actions were the only path calling LogToTray.
+                    if (Global.ProfileChangedNotification) AppLogger.LogToTray(prolog);
                 }
 
                 LightColorChanged?.Invoke(this, EventArgs.Empty);
