@@ -58,6 +58,10 @@ namespace DS4Windows
 
         public static bool[] forcelight = new bool[Global.MAX_DS4_CONTROLLER_COUNT] { false, false, false, false, false, false, false, false };
         public static DS4Color[] forcedColor = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
+        // 2026-10-31 battery hold, enforced here every tick: immediate
+        // battery color for 3 seconds, then normal logic (original reset).
+        public static DateTime[] BatteryHoldUntil = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
+        public static DS4Color[] BatteryHoldColor = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
         public static byte[] forcedFlash = new byte[Global.MAX_DS4_CONTROLLER_COUNT];
         internal const int PULSE_FLASH_DURATION = 2000;
         internal const double PULSE_FLASH_SEGMENTS = PULSE_FLASH_DURATION / 40;
@@ -329,6 +333,29 @@ namespace DS4Windows
                     OpenRGBServer.Instance.TryGetColor(deviceNum, out DS4Color openRGBColor))
                 {
                     color = openRGBColor;
+                }
+
+                // Battery hold override, after all other color logic.
+                if (BatteryHoldUntil[deviceNum] != DateTime.MinValue)
+                {
+                    if (DateTime.UtcNow < BatteryHoldUntil[deviceNum])
+                    {
+                        color = BatteryHoldColor[deviceNum];
+                        useLightRoutine = true;
+                        useForceLight = false;
+                        forcedFlash[deviceNum] = 0;
+                        // Force over Steam/game native ownership every tick:
+                        // a game that re-claims lightbar ownership each frame
+                        // would otherwise win over the profile lightbar.
+                        if (device is DS4Windows.InputDevices.DualSenseDevice dsDevice)
+                        {
+                            dsDevice.ForceBatteryLightbarOwnership();
+                        }
+                    }
+                    else
+                    {
+                        BatteryHoldUntil[deviceNum] = DateTime.MinValue;
+                    }
                 }
 
                 DS4LightbarState lightState = new DS4LightbarState

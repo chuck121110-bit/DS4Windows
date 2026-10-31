@@ -6739,6 +6739,13 @@ namespace DS4Windows
                         Program.rootHub.SetDevRumble(device, feedback[1], feedback[0], deviceIndex);
                         ApplyGameRumbleTriggerVibration(device, deviceIndex,
                             feedback[0], feedback[1]);
+                        if (deviceIndex >= 0 && deviceIndex < DS4LightBar.BatteryHoldUntil.Length &&
+                            DS4LightBar.BatteryHoldUntil[deviceIndex] != DateTime.MinValue &&
+                            DateTime.UtcNow < DS4LightBar.BatteryHoldUntil[deviceIndex])
+                        {
+                            ApplyLightbar(device, DS4LightBar.BatteryHoldColor[deviceIndex].red, DS4LightBar.BatteryHoldColor[deviceIndex].green, DS4LightBar.BatteryHoldColor[deviceIndex].blue, 0, 0);
+                            break;
+                        }
                         if (ShouldApplyGameLightbar(deviceIndex))
                         {
                             ApplyLightbar(device, feedback[2], feedback[3],
@@ -6751,6 +6758,21 @@ namespace DS4Windows
                 case ViiperVirtualDeviceType.DualSenseEdge:
                     if (feedbackLength >= DualSenseBaseFeedbackLength)
                     {
+                        // Force battery LED over Steam Input: do NOT reclaim
+                        // the controller from Steam, just drop Steam's LED /
+                        // native output for these 3 seconds, keep rumble,
+                        // and force the battery color. DS4LightBar re-forces
+                        // it every report tick, and normal logic resets it
+                        // to profile/custom color when the hold expires.
+                        if (deviceIndex >= 0 && deviceIndex < DS4LightBar.BatteryHoldUntil.Length &&
+                            DS4LightBar.BatteryHoldUntil[deviceIndex] != DateTime.MinValue &&
+                            DateTime.UtcNow < DS4LightBar.BatteryHoldUntil[deviceIndex])
+                        {
+                            if (feedbackLength >= 2)
+                                Program.rootHub.SetDevRumble(device, feedback[1], feedback[0], deviceIndex);
+                            ApplyLightbar(device, DS4LightBar.BatteryHoldColor[deviceIndex].red, DS4LightBar.BatteryHoldColor[deviceIndex].green, DS4LightBar.BatteryHoldColor[deviceIndex].blue, 0, 0);
+                            break;
+                        }
                         bool nativeForwardingAllowed = IsNativeDualSenseFeedbackCompatible(device);
                         if (nativeForwardingAllowed && freshNativeOutput &&
                             IsExactNativeDualSenseCommand(feedback, feedbackLength))
@@ -10105,6 +10127,12 @@ namespace DS4Windows
 
         private static bool ShouldApplyGameLightbar(int deviceIndex)
         {
+            // Battery hold forces over Steam Input / game lightbar: never
+            // let a game or Steam LED pass through during the hold.
+            if (deviceIndex >= 0 && deviceIndex < DS4LightBar.BatteryHoldUntil.Length &&
+                DS4LightBar.BatteryHoldUntil[deviceIndex] != DateTime.MinValue &&
+                DateTime.UtcNow < DS4LightBar.BatteryHoldUntil[deviceIndex])
+                return false;
             return deviceIndex >= 0 &&
                 deviceIndex < Global.TEST_PROFILE_ITEM_COUNT &&
                 Global.getLightbarSettingsInfo(deviceIndex).mode ==

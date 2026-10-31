@@ -297,27 +297,10 @@ namespace DS4WinWPF.DS4Forms
             // Log exceptions that might occur
             Util.LogAssistBackgroundTask(tempTask);
 #if !BETA_VERSION
+            // 2026-10-31: startup update check removed at user request.
+            // Manual CheckUpdatesBtn_Click remains available.
             tempTask = Task.Delay(100).ContinueWith(_ =>
             {
-                int checkwhen = Global.CheckWhen;
-                if (!PortableLabContext.IsActive && checkwhen > 0 && DateTime.Now >= Global.LastChecked + TimeSpan.FromHours(checkwhen))
-                {
-                    try
-                    {
-                        if (Changelog.CheckNewerReleaseExists(out string releaseTag, false))
-                        {
-                            DisplayUpdaterWindow(releaseTag);
-                        }
-                    }
-                    catch
-                    {
-                        Dispatcher.Invoke(() => MessageBox.Show(Strings.FailedToRetrieveLatestVersion, "DS4Windows Updater"));
-                        // bubble the exception up to allow to see what's wrong in the log
-                        throw;
-                    }
-
-                    Global.LastChecked = DateTime.Now;
-                }
 
                 // Check if main window closing was requested from app update.
                 // Quit task early
@@ -3546,14 +3529,19 @@ Suspend support not enabled.", true);
 
         private void SwipeTouchCk_Click(object sender, RoutedEventArgs e)
         {
-            bool status = swipeTouchCk.IsChecked == true || Global.PsBumperProfileSwitch;
-            ChangeHotkeysStatus(status);
+            // 2026-10-31 fix: each checkbox sets only its own setting.
+            // The old OR logic made swipe impossible to turn off while
+            // bumpers were on, and swipe had no Save, so a killed or
+            // improperly closed DS4 lost the change and reloaded it as on.
+            Global.SwipeProfiles = swipeTouchCk.IsChecked == true;
+            ChangeHotkeysStatus(Global.SwipeProfiles || Global.PsBumperProfileSwitch);
+            Global.Save();
         }
 
         private void PsBumperCk_Click(object sender, RoutedEventArgs e)
         {
-            bool status = psBumperCk.IsChecked == true || Global.SwipeProfiles;
-            ChangeHotkeysStatus(status);
+            Global.PsBumperProfileSwitch = psBumperCk.IsChecked == true;
+            ChangeHotkeysStatus(Global.SwipeProfiles || Global.PsBumperProfileSwitch);
             Global.Save();
         }
 

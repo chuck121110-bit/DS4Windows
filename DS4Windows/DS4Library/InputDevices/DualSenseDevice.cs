@@ -7307,6 +7307,20 @@ namespace DS4Windows.InputDevices
             }
         }
 
+        // 2026-10-31: battery hold forces over Steam/game lightbar.
+        // This changes only the visual ownership bit, not triggers,
+        // rumble, audio, or mic state. Game can reclaim ownership on
+        // its next native output, so DS4LightBar calls this every tick
+        // during the hold.
+        internal void ForceBatteryLightbarOwnership()
+        {
+            if (physicalOutputStateMailbox.
+                SetNativeGameLightbarOwnershipReleased(true))
+            {
+                QueuePhysicalOutputUpdate();
+            }
+        }
+
         private static void MergeProfileLightbarIntoV5AudioSnapshot(
             in DualSensePhysicalOutputSnapshot source, byte[] destination,
             int destinationOffset)
@@ -8200,6 +8214,17 @@ namespace DS4Windows.InputDevices
             if (!color.HasValue && (releasedFields & DualSenseDsxOverlay.ColorField) != 0)
                 color = !outputState.NativeGameLightbarOwnershipReleased && native.Color.HasValue
                     ? native.Color : outputState.ProfileLightbar.LightBarColor;
+            // 2026-10-31: battery hold forces over Steam/game native color,
+            // at the final native report stage, regardless of ownership.
+            for (int bi = 0; bi < DS4LightBar.BatteryHoldUntil.Length; bi++)
+            {
+                if (DS4LightBar.BatteryHoldUntil[bi] != DateTime.MinValue &&
+                    DateTime.UtcNow < DS4LightBar.BatteryHoldUntil[bi])
+                {
+                    color = DS4LightBar.BatteryHoldColor[bi];
+                    break;
+                }
+            }
             if (color.HasValue)
             {
                 report[stateOffset + 1] = (byte)((report[stateOffset + 1] & ~0x08) | 0x04);

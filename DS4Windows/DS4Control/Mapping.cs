@@ -1138,6 +1138,9 @@ namespace DS4Windows
         public static int[] fadetimer = new int[Global.MAX_DS4_CONTROLLER_COUNT] { 0, 0, 0, 0, 0, 0, 0, 0 };
         public static int[] prevFadetimer = new int[Global.MAX_DS4_CONTROLLER_COUNT] { 0, 0, 0, 0, 0, 0, 0, 0 };
         public static DS4Color[] lastColor = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
+        // 2026-10-31 battery check: immediate battery percent color,
+        // held 3 seconds in DS4LightBar no matter what, then original reset.
+        private static DS4Color[] batteryHoldTrans = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
         public static List<ActionState> actionDone = new List<ActionState>();
         public static SpecialAction[] untriggeraction = new SpecialAction[Global.MAX_DS4_CONTROLLER_COUNT];
         public static DateTime[] nowAction = { DateTime.MinValue, DateTime.MinValue, DateTime.MinValue, DateTime.MinValue };
@@ -5342,14 +5345,23 @@ namespace DS4Windows
                                     DS4Device d = ctrl.DS4Controllers[device];
                                     if (!actionDone[index].dev[device])
                                     {
+                                        DS4Color empty = new DS4Color(byte.Parse(dets[3]), byte.Parse(dets[4]), byte.Parse(dets[5]));
+                                        DS4Color full = new DS4Color(byte.Parse(dets[6]), byte.Parse(dets[7]), byte.Parse(dets[8]));
+                                        batteryHoldTrans[device] = getTransitionedColor(ref empty, ref full, d.Battery);
                                         lastColor[device] = d.LightBarColor;
+                                        DS4LightBar.BatteryHoldColor[device] = batteryHoldTrans[device];
+                                        DS4LightBar.BatteryHoldUntil[device] = DateTime.UtcNow.AddSeconds(1);
+                                    }
+                                    if (DS4LightBar.BatteryHoldUntil[device] != DateTime.MinValue && DateTime.UtcNow < DS4LightBar.BatteryHoldUntil[device])
+                                    {
+                                        DS4LightBar.forcedColor[device] = batteryHoldTrans[device];
                                         DS4LightBar.forcelight[device] = true;
                                     }
-                                    DS4Color empty = new DS4Color(byte.Parse(dets[3]), byte.Parse(dets[4]), byte.Parse(dets[5]));
-                                    DS4Color full = new DS4Color(byte.Parse(dets[6]), byte.Parse(dets[7]), byte.Parse(dets[8]));
-                                    DS4Color trans = getTransitionedColor(ref empty, ref full, d.Battery);
-                                    if (fadetimer[device] < 100)
-                                        DS4LightBar.forcedColor[device] = getTransitionedColor(ref lastColor[device], ref trans, fadetimer[device] += 2);
+                                    else
+                                    {
+                                        DS4LightBar.BatteryHoldUntil[device] = DateTime.MinValue;
+                                        DS4LightBar.forcelight[device] = false;
+                                    }
                                 }
                                 actionDone[index].dev[device] = true;
                             }
@@ -5398,7 +5410,21 @@ namespace DS4Windows
                                 actionFound = true;
                                 if (actionDone[index].dev[device])
                                 {
-                                    fadetimer[device] = 0;
+                                    // Hold for 3 seconds no matter what, even after
+                                    // release: DS4LightBar enforces the color every tick.
+                                    if (DS4LightBar.BatteryHoldUntil[device] != DateTime.MinValue && DateTime.UtcNow < DS4LightBar.BatteryHoldUntil[device])
+                                    {
+                                        DS4LightBar.forcedColor[device] = batteryHoldTrans[device];
+                                        DS4LightBar.forcelight[device] = true;
+                                    }
+                                    else if (DS4LightBar.BatteryHoldUntil[device] != DateTime.MinValue)
+                                    {
+                                        // Timer done: original base reset only.
+                                        // forcelight=false lets normal lightbar logic
+                                        // return to custom color if enabled, else
+                                        // profile selected color.
+                                        DS4LightBar.BatteryHoldUntil[device] = DateTime.MinValue;
+                                        fadetimer[device] = 0;
                                     /*if (prevFadetimer[device] == fadetimer[device])
                                     {
                                         prevFadetimer[device] = 0;
@@ -5408,6 +5434,7 @@ namespace DS4Windows
                                         prevFadetimer[device] = fadetimer[device];*/
                                     DS4LightBar.forcelight[device] = false;
                                     actionDone[index].dev[device] = false;
+                                    }
                                 }
                             }
                             else if (action.typeID == SpecialAction.ActionTypeId.DisconnectBT && action.pressRelease)
