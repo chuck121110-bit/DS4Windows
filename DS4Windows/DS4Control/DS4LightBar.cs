@@ -62,6 +62,22 @@ namespace DS4Windows
         // battery color for 3 seconds, then normal logic (original reset).
         public static DateTime[] BatteryHoldUntil = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
         public static DS4Color[] BatteryHoldColor = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
+        // 2026-11-01 connect force: first tick after a gap (controller
+        // just turned back on) forces pure custom/profile color for
+        // 3 seconds, no battery/flash/charging/rainbow intermediate,
+        // so no yellow step sticks on connect.
+        public static DateTime[] ConnectHoldUntil = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
+        public static DS4Color[] ConnectHoldColor = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static DateTime[] lastLightBarTick = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
+        // 2026-11-01 fade: color changes fade in/out over 600 ms instead
+        // of snapping, including blue firmware to profile on connect.
+        private static DS4Color[] fadeFromColor = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static DS4Color[] fadeToColor = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static DS4Color[] lastSentColor = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static bool[] lastSentValid = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static DateTime[] fadeStart = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static bool[] fading = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
+        private const double FadeDurationMs = 600.0;
         public static byte[] forcedFlash = new byte[Global.MAX_DS4_CONTROLLER_COUNT];
         internal const int PULSE_FLASH_DURATION = 2000;
         internal const double PULSE_FLASH_SEGMENTS = PULSE_FLASH_DURATION / 40;
@@ -70,6 +86,10 @@ namespace DS4Windows
 
         public static void updateLightBar(DS4Device device, int deviceNum)
         {
+            DateTime tickNow = DateTime.UtcNow;
+            bool isFreshConnect = lastLightBarTick[deviceNum] == DateTime.MinValue ||
+                (tickNow - lastLightBarTick[deviceNum]) > TimeSpan.FromSeconds(5);
+            lastLightBarTick[deviceNum] = tickNow;
             DS4Color color = new DS4Color();
             bool useForceLight = forcelight[deviceNum];
             LightbarSettingInfo lightbarSettingInfo = getLightbarSettingsInfo(deviceNum);
@@ -335,6 +355,34 @@ namespace DS4Windows
                     color = openRGBColor;
                 }
 
+                // Connect hold override: fresh connect, pure custom or
+                // profile main color, overriding battery/flash/charging/
+                // rainbow intermediates, including any yellow step.
+                if (isFreshConnect && !defaultLight && useLightRoutine)
+                {
+                    ConnectHoldUntil[deviceNum] = tickNow.AddSeconds(1); // final: 1 second, not 3
+                    ConnectHoldColor[deviceNum] = lightModeInfo.useCustomLed
+                        ? lightModeInfo.m_CustomLed : getMainColor(deviceNum);
+                }
+                if (ConnectHoldUntil[deviceNum] != DateTime.MinValue)
+                {
+                    if (DateTime.UtcNow < ConnectHoldUntil[deviceNum])
+                    {
+                        color = ConnectHoldColor[deviceNum];
+                        useLightRoutine = true;
+                        useForceLight = false;
+                        forcedFlash[deviceNum] = 0;
+                        if (device is DS4Windows.InputDevices.DualSenseDevice dsDevice2)
+                        {
+                            dsDevice2.ForceBatteryLightbarOwnership();
+                        }
+                    }
+                    else
+                    {
+                        ConnectHoldUntil[deviceNum] = DateTime.MinValue;
+                    }
+                }
+
                 // Battery hold override, after all other color logic.
                 if (BatteryHoldUntil[deviceNum] != DateTime.MinValue)
                 {
@@ -356,6 +404,73 @@ namespace DS4Windows
                     {
                         BatteryHoldUntil[deviceNum] = DateTime.MinValue;
                     }
+                }
+
+                // Fade in/out: smooth any color change over 600 ms.
+                // Skip for rainbow, pulse flash, charging pulse/rainbow,
+                // distance rumble, and forced picker preview, which already
+                // animate or need live response, and skip on shutdown.
+                bool skipFade = shuttingdown || useForceLight ||
+                    lightModeInfo.rainbow > 0 ||
+                    (lightModeInfo.flashType == 1 && device.getBattery() <= lightModeInfo.flashAt && !device.isCharging()) ||
+                    (device.isCharging() && (lightModeInfo.chargingType == 1 || lightModeInfo.chargingType == 2)) ||
+                    (DistanceProfiles[deviceNum] || tempprofileDistance[deviceNum]);
+                if (!skipFade)
+                {
+                    if (isFreshConnect && !lastSentValid[deviceNum])
+                    {
+                        // Final 2026-11-01: do NOT set DS4 blue on connect.
+                        // Firmware blue fades out on its own, DS4 fades
+                        // in from black only, then to profile/custom.
+                        fadeFromColor[deviceNum] = new DS4Color(0, 0, 0);
+                        fadeToColor[deviceNum] = color;
+                        fadeStart[deviceNum] = tickNow;
+                        fading[deviceNum] = true;
+                        lastSentColor[deviceNum] = fadeFromColor[deviceNum];
+                        lastSentValid[deviceNum] = true;
+                    }
+                    else if (lastSentValid[deviceNum] && (color.red != lastSentColor[deviceNum].red || color.green != lastSentColor[deviceNum].green || color.blue != lastSentColor[deviceNum].blue))
+                    {
+                        if (!fading[deviceNum] || fadeToColor[deviceNum].red != color.red || fadeToColor[deviceNum].green != color.green || fadeToColor[deviceNum].blue != color.blue)
+                        {
+                            fadeFromColor[deviceNum] = lastSentColor[deviceNum];
+                            fadeToColor[deviceNum] = color;
+                            fadeStart[deviceNum] = tickNow;
+                            fading[deviceNum] = true;
+                        }
+                    }
+                    if (fading[deviceNum])
+                    {
+                        double elapsedMs = (tickNow - fadeStart[deviceNum]).TotalMilliseconds;
+                        // Fade in 600 ms, fade out 420 ms (0.7x), by direction.
+                        int fadeFromSum = fadeFromColor[deviceNum].red + fadeFromColor[deviceNum].green + fadeFromColor[deviceNum].blue;
+                        int fadeToSum = fadeToColor[deviceNum].red + fadeToColor[deviceNum].green + fadeToColor[deviceNum].blue;
+                        double fadeDurationMs = fadeToSum >= fadeFromSum ? FadeDurationMs : 420.0;
+                        double ratio = elapsedMs / fadeDurationMs;
+                        if (ratio >= 1.0)
+                        {
+                            color = fadeToColor[deviceNum];
+                            fading[deviceNum] = false;
+                        }
+                        else
+                        {
+                            if (ratio < 0.0) ratio = 0.0;
+                            DS4Color fromC = fadeFromColor[deviceNum];
+                            DS4Color toC = fadeToColor[deviceNum];
+                            color = new DS4Color(
+                                (byte)(fromC.red + (toC.red - fromC.red) * ratio),
+                                (byte)(fromC.green + (toC.green - fromC.green) * ratio),
+                                (byte)(fromC.blue + (toC.blue - fromC.blue) * ratio));
+                        }
+                    }
+                    lastSentColor[deviceNum] = color;
+                    lastSentValid[deviceNum] = true;
+                }
+                else
+                {
+                    lastSentColor[deviceNum] = color;
+                    lastSentValid[deviceNum] = true;
+                    fading[deviceNum] = false;
                 }
 
                 DS4LightbarState lightState = new DS4LightbarState

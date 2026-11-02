@@ -2708,6 +2708,7 @@ namespace DS4Windows
 
         public static bool[] LowerRCOn => m_Config.lowerRCOn;
         public static bool[] TouchClickPassthru => m_Config.touchClickPassthru;
+        public static bool[] TouchToggleDisablesClicks => m_Config.touchToggleDisablesClicks;
         public static TouchButtonActivationMode[] TouchpadButtonMode => m_Config.touchpadButtonMode;
         public static bool[] TouchpadJitterCompensation => m_Config.touchpadJitterCompensation;
         public static bool getTouchpadJitterCompensation(int index)
@@ -4307,6 +4308,7 @@ namespace DS4Windows
           DEFAULT_TOUCHPAD_JITTER_COMP, DEFAULT_TOUCHPAD_JITTER_COMP, DEFAULT_TOUCHPAD_JITTER_COMP };
         public bool[] lowerRCOn = new bool[Global.TEST_PROFILE_ITEM_COUNT] { false, false, false, false, false, false, false, false, false };
         public bool[] touchClickPassthru = new bool[Global.TEST_PROFILE_ITEM_COUNT] { false, false, false, false, false, false, false, false, false };
+        public bool[] touchToggleDisablesClicks = new bool[Global.TEST_PROFILE_ITEM_COUNT] { true, true, true, true, true, true, true, true, true };
         public string[] profilePath = new string[Global.TEST_PROFILE_ITEM_COUNT] { string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty };
         public string[] olderProfilePath = new string[Global.TEST_PROFILE_ITEM_COUNT] { string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty };
         public Dictionary<string, string> linkedProfiles = new Dictionary<string, string>();
@@ -5695,6 +5697,7 @@ namespace DS4Windows
                 XmlNode xmlRightTriggerMiddle = m_Xdoc.CreateNode(XmlNodeType.Element, "RightTriggerMiddle", null); xmlRightTriggerMiddle.InnerText = r2ModInfo[device].deadZone.ToString(); rootElement.AppendChild(xmlRightTriggerMiddle);
                 XmlNode xmlTouchpadInvert = m_Xdoc.CreateNode(XmlNodeType.Element, "TouchpadInvert", null); xmlTouchpadInvert.InnerText = touchpadInvert[device].ToString(); rootElement.AppendChild(xmlTouchpadInvert);
                 XmlNode xmlTouchClickPasthru = m_Xdoc.CreateNode(XmlNodeType.Element, "TouchpadClickPassthru", null); xmlTouchClickPasthru.InnerText = touchClickPassthru[device].ToString(); rootElement.AppendChild(xmlTouchClickPasthru);
+                XmlNode xmlTouchToggleDisablesClicks = m_Xdoc.CreateNode(XmlNodeType.Element, "TouchToggleDisablesClicks", null); xmlTouchToggleDisablesClicks.InnerText = touchToggleDisablesClicks[device].ToString(); rootElement.AppendChild(xmlTouchToggleDisablesClicks);
 
                 XmlNode xmlL2AD = m_Xdoc.CreateNode(XmlNodeType.Element, "L2AntiDeadZone", null); xmlL2AD.InnerText = l2ModInfo[device].antiDeadZone.ToString(); rootElement.AppendChild(xmlL2AD);
                 XmlNode xmlR2AD = m_Xdoc.CreateNode(XmlNodeType.Element, "R2AntiDeadZone", null); xmlR2AD.InnerText = r2ModInfo[device].antiDeadZone.ToString(); rootElement.AppendChild(xmlR2AD);
@@ -6955,6 +6958,8 @@ namespace DS4Windows
 
                 try { Item = m_Xdoc.SelectSingleNode("/" + rootname + "/TouchpadClickPassthru"); bool.TryParse(Item.InnerText, out touchClickPassthru[device]); }
                 catch { missingSetting = true; }
+                try { Item = m_Xdoc.SelectSingleNode("/" + rootname + "/TouchToggleDisablesClicks"); bool.TryParse(Item.InnerText, out touchToggleDisablesClicks[device]); }
+                catch { touchToggleDisablesClicks[device] = true; missingSetting = true; }
 
                 try { Item = m_Xdoc.SelectSingleNode("/" + rootname + "/LeftTriggerMiddle"); byte.TryParse(Item.InnerText, out l2ModInfo[device].deadZone); }
                 catch { missingSetting = true; }
@@ -11199,6 +11204,7 @@ namespace DS4Windows
             touchpadJitterCompensation[device] = DEFAULT_TOUCHPAD_JITTER_COMP;
             lowerRCOn[device] = false;
             touchClickPassthru[device] = false;
+            touchToggleDisablesClicks[device] = true;
 
             rumble[device] = DEFAULT_RUMBLE;
             rumbleAutostopTime[device] = 0;

@@ -1379,20 +1379,9 @@
 
                             <StackPanel>
                                 <StackPanel Orientation="Horizontal">
-                                    <GroupBox x:Name="colorGB" Header="{lex:Loc Color}" Padding="4">
+                                    <GroupBox x:Name="colorGB" Header="{lex:Loc Color}" Padding="4" VerticalAlignment="Top">
                                         <StackPanel>
-                                            <StackPanel Orientation="Horizontal">
-                                                <Label Content="R" />
-                                                <Slider Value="{Binding MainColorR}" Minimum="0" Maximum="255" ToolTip="{Binding MainColorR}" MinWidth="100" Background="{Binding MainColorRString, FallbackValue=Red}"/>
-                                            </StackPanel>
-                                            <StackPanel Orientation="Horizontal">
-                                                <Label Content="G" />
-                                                <Slider Value="{Binding MainColorG}" MinWidth="100" Minimum="0" Maximum="255" ToolTip="{Binding MainColorG}" Background="{Binding MainColorGString, FallbackValue=Lime}"/>
-                                            </StackPanel>
-                                            <StackPanel Orientation="Horizontal">
-                                                <Label Content="B" />
-                                                <Slider Value="{Binding MainColorB}" MinWidth="100" Minimum="0" Maximum="255" ToolTip="{Binding MainColorB}" Background="{Binding MainColorBString, FallbackValue=Blue}"/>
-                                            </StackPanel>
+                                            <Button x:Name="mainColorBtn" Width="20" Height="20" Background="{Binding MainColorString,FallbackValue=Blue}" ToolTip="Pick lightbar color" Click="MainColorBtn_Click" HorizontalAlignment="Left" Margin="0,6,0,0" />
                                         </StackPanel>
                                     </GroupBox>
 
@@ -1537,6 +1526,9 @@
                                     <CheckBox Content="Start with Slide/Scroll Off" IsChecked="{Binding StartTouchpadOff}" VerticalAlignment="Center"
                                                     ToolTip="{lex:Loc Resources:TouchpadOffTip}" Margin="0,10,0,0" />
 
+                                    <CheckBox Content="Touchpad toggle also disables clicks" IsChecked="{Binding TouchToggleDisablesClicks}" VerticalAlignment="Center"
+                                                    ToolTip="PS plus touchpad turning controls off also disables scroll and mouse clicks" Margin="0,10,0,0" />
+
                                     <StackPanel Orientation="Horizontal" Margin="{StaticResource spaceMargin}">
                                         <Label Content="Rotation" ContentStringFormat="{}{0}:" />
                                         <xctk:DoubleUpDown d:IsHidden="True" MinWidth="80" Height="20" Minimum="-180" Maximum="180" Increment="1" FormatString="F0" Value="{Binding TouchRelMouseRotation,FallbackValue='0'}"
@@ -1638,6 +1630,9 @@
                                     <CheckBox Content="Passthru Click Action (DS4 mode)" IsChecked="{Binding TouchpadClickPassthru}" VerticalAlignment="Center"
                                                           Margin="5,8,0,10" />
 
+                                    <CheckBox Content="Touchpad toggle also disables clicks" IsChecked="{Binding TouchToggleDisablesClicks}" VerticalAlignment="Center"
+                                                    ToolTip="PS plus touchpad turning controls off also disables scroll and mouse clicks" Margin="5,8,0,0" />
+
                                     <ContentControl x:Name="touchContentControl2" MinWidth="400" HorizontalAlignment="Left" Margin="5,8,0,0" />
                                     <!--<local:TouchButtonUserControl x:Name="touchBtnControl2" MinWidth="400" Margin="0,8,0,0" />-->
                                 </StackPanel>
@@ -1645,6 +1640,9 @@
 
                             <TabItem Header="{lex:Loc MouseJoystick}" Visibility="Collapsed">
                                 <StackPanel x:Name="touchMouseJoystickPanel">
+
+                                    <CheckBox Content="Touchpad toggle also disables clicks" IsChecked="{Binding TouchToggleDisablesClicks}" VerticalAlignment="Center"
+                                                    ToolTip="PS plus touchpad turning controls off also disables scroll and mouse clicks" Margin="5,8,0,0" />
 
                                     <StackPanel Orientation="Horizontal" Margin="{StaticResource spaceMargin}">
                                         <Label Content="{lex:Loc DeadZone}" />
@@ -1765,6 +1763,9 @@
                                         <Label Content="Snap To Center on Release:" />
                                         <CheckBox IsChecked="{Binding TouchAbsMouseSnapCenter}" VerticalAlignment="Center" Margin="8,0,0,0" />
                                     </StackPanel>
+
+                                    <CheckBox Content="Touchpad toggle also disables clicks" IsChecked="{Binding TouchToggleDisablesClicks}" VerticalAlignment="Center"
+                                                    ToolTip="PS plus touchpad turning controls off also disables scroll and mouse clicks" Margin="5,8,0,0" />
 
                                     <StackPanel Orientation="Horizontal" Margin="{StaticResource spaceMargin}">
                                         <ContentControl x:Name="touchContentControl3" MinWidth="400" HorizontalAlignment="Left" Margin="5,0,0,0" />

@@ -5410,15 +5410,28 @@ namespace DS4Windows
                                 actionFound = true;
                                 if (actionDone[index].dev[device])
                                 {
-                                    // Hold for 3 seconds no matter what, even after
+                                    // Hold for 1 second no matter what, even after
                                     // release: DS4LightBar enforces the color every tick.
                                     if (DS4LightBar.BatteryHoldUntil[device] != DateTime.MinValue && DateTime.UtcNow < DS4LightBar.BatteryHoldUntil[device])
                                     {
                                         DS4LightBar.forcedColor[device] = batteryHoldTrans[device];
                                         DS4LightBar.forcelight[device] = true;
                                     }
-                                    else if (DS4LightBar.BatteryHoldUntil[device] != DateTime.MinValue)
+                                    else
                                     {
+                                        // 2026-11-01 fix, one battery check only bug:
+                                        // DS4LightBar already clears BatteryHoldUntil
+                                        // to MinValue when the hold expires, so the
+                                        // old else-if (hold != MinValue) never ran
+                                        // after the first check, actionDone stayed
+                                        // true forever, and the next press was
+                                        // ignored completely, no log, no LED, no
+                                        // notification, until the controller was
+                                        // restarted. Reset unconditionally once
+                                        // the trigger is released and the hold
+                                        // is not active, whether the hold was
+                                        // cleared by the tick or not.
+                                        // Fade logic is untouched here.
                                         // Timer done: original base reset only.
                                         // forcelight=false lets normal lightbar logic
                                         // return to custom color if enabled, else

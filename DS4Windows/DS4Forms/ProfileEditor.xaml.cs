@@ -2381,6 +2381,19 @@ namespace DS4WinWPF.DS4Forms
             }
         }
 
+        private void MainColorBtn_Click(object sender, RoutedEventArgs e)
+        {
+            ColorPickerWindow dialog = new ColorPickerWindow();
+            dialog.Owner = Application.Current.MainWindow;
+            Color tempcolor = profileSettingsVM.MainColor;
+            dialog.colorPicker.SelectedColor = tempcolor;
+            profileSettingsVM.StartForcedColor(tempcolor);
+            dialog.ColorChanged += (sender2, color) => { profileSettingsVM.UpdateForcedColor(color); };
+            dialog.ShowDialog();
+            profileSettingsVM.EndForcedColor();
+            profileSettingsVM.UpdateMainColor(dialog.colorPicker.SelectedColor.GetValueOrDefault());
+        }
+
         private void FlashColorBtn_Click(object sender, RoutedEventArgs e)
         {
             ColorPickerWindow dialog = new ColorPickerWindow();

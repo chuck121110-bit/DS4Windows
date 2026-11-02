@@ -1109,7 +1109,7 @@ namespace DS4Windows
                         : $"{status.DisplayText}. Use Settings > VIIPER Virtual Controller Support to install or repair VIIPER and usbip-win2.");
             }
 
-            deviceStream = CreateDeviceStreamWithServerFallback();
+            deviceStream = TryReuseCachedViiperDevice(preparedPhysicalControllerIndex) ?? CreateDeviceStreamWithServerFallback();
             try
             {
                 PrepareSwitch2VirtualFeedbackSession();
@@ -1325,6 +1325,171 @@ namespace DS4Windows
                     $"DS4Windows -> VIIPER {viiperType} input publication limit: {stateWriteRateHz} Hz; DS4Windows queue: {queuePolicy}. Virtual USB service cadence is determined separately by the device descriptor.",
                     false);
             }
+        }
+
+        // 2026-11-02 VIIPER audio device reuse, DS4 side only.
+        // Problem: every connect created a new VIIPER bus/device, so
+        // Windows saw a new USB device instance and new audio endpoint
+        // GUIDs each time, and Chuck's mic auto-switch software added
+        // a new device to the top of its list every time.
+        // Fix, while DS4/VIIPER are running: keep the last VIIPER
+        // bus/device for a slot + virtual type + physical MAC, do NOT
+        // remove it on physical disconnect, close only the TCP stream,
+        // and reopen the same bus/device on the next connect for the
+        // same slot/type/MAC, with the same usbip port and lifetime.
+        // This does NOT fix reuse across a DS4/VIIPER restart, that
+        // would need VIIPER server changes, and DS4 cannot force
+        // VIIPER's server-side serial from its create request.
+        // On process exit, cached lifetimes are disposed normally,
+        // so a DS4 shutdown still removes the virtual device.
+        // A different output type or MAC for the same slot mismatches
+        // the cache key, so that change still creates a new device,
+        // and the old cached device for that slot is disposed then,
+        // so it does not stay orphaned in Windows.
+        // Reuse is limited to DualSense/DualSenseEdge, and skipped
+        // when Sony Bluetooth haptics are requested, because a
+        // reopened stream always gets the Legacy haptics converter.
+        // Any reuse failure falls back to creating a new device.
+        private static readonly object ViiperReuseCacheLock = new object();
+        private static readonly Dictionary<string, ViiperVirtualDeviceLifetime> ViiperReuseCache =
+            new Dictionary<string, ViiperVirtualDeviceLifetime>();
+        private static int ViiperReuseCacheExitHookRegistered = 0;
+        private static void EnsureViiperReuseCacheExitHook()
+        {
+            if (Interlocked.Exchange(ref ViiperReuseCacheExitHookRegistered, 1) == 0)
+            {
+                AppDomain.CurrentDomain.ProcessExit += (sender, args) =>
+                {
+                    lock (ViiperReuseCacheLock)
+                    {
+                        foreach (ViiperVirtualDeviceLifetime lifetime in ViiperReuseCache.Values)
+                        {
+                            try { lifetime.Dispose(); } catch { }
+                        }
+                        ViiperReuseCache.Clear();
+                    }
+                };
+            }
+        }
+        private string BuildViiperReuseKey(int slot, string mac)
+        {
+            return $"{slot}:{(int)viiperType}:{(int)outputType}:{gamepadOnly}:{audioOnlySidecar}:{mac}";
+        }
+        private string GetViiperReuseMac(int slot)
+        {
+            try
+            {
+                DualSenseDevice target = ResolvePhysicalControllerTarget(slot);
+                return target?.getMacAddress();
+            }
+            catch
+            {
+                return null;
+            }
+        }
+        private bool TryCacheViiperDeviceForReuse(ViiperDeviceStream stream)
+        {
+            if (stream == null || viiperType == ViiperVirtualDeviceType.XboxOne)
+                return false;
+            ViiperVirtualDeviceLifetime lifetime = stream.DeviceLifetime;
+            if (lifetime == null || lifetime.IsDisposed || stream.UsbipPort <= 0)
+                return false;
+            int slot = Volatile.Read(ref lastInputDeviceIndex);
+            if (slot < 0)
+                return false;
+            string mac = GetViiperReuseMac(slot);
+            if (string.IsNullOrWhiteSpace(mac))
+                return false;
+            string key = BuildViiperReuseKey(slot, mac);
+            EnsureViiperReuseCacheExitHook();
+            lock (ViiperReuseCacheLock)
+            {
+                string slotPrefix = $"{slot}:";
+                foreach (string oldKey in new System.Collections.Generic.List<string>(ViiperReuseCache.Keys))
+                {
+                    if (oldKey.StartsWith(slotPrefix, StringComparison.Ordinal) && oldKey != key)
+                    {
+                        try { ViiperReuseCache[oldKey].Dispose(); } catch { }
+                        ViiperReuseCache.Remove(oldKey);
+                    }
+                }
+                ViiperReuseCache[key] = lifetime;
+            }
+            // Close only the TCP transport, like RecoverStreamAsOwner.
+            // Do NOT dispose the stream or its lifetime here, or VIIPER
+            // would remove the bus/device and Windows would create a
+            // new USB instance and new audio endpoints on reconnect.
+            stream.CloseTransport();
+            AppLogger.LogToGui(
+                $"VIIPER device kept for reuse for slot {slot + 1}: bus={lifetime.BusId} device={lifetime.DevId} port={lifetime.UsbipPort}",
+                false);
+            return true;
+        }
+        private ViiperDeviceStream TryReuseCachedViiperDevice(int slot)
+        {
+            if (viiperType != ViiperVirtualDeviceType.DualSense &&
+                viiperType != ViiperVirtualDeviceType.DualSenseEdge)
+                return null;
+            if (slot < 0)
+                return null;
+            string mac = GetViiperReuseMac(slot);
+            if (string.IsNullOrWhiteSpace(mac))
+                return null;
+            string key = BuildViiperReuseKey(slot, mac);
+            ViiperVirtualDeviceLifetime lifetime;
+            lock (ViiperReuseCacheLock)
+            {
+                if (!ViiperReuseCache.TryGetValue(key, out lifetime))
+                    return null;
+                ViiperReuseCache.Remove(key);
+            }
+            if (lifetime == null || lifetime.IsDisposed)
+                return null;
+            try
+            {
+                DualSenseDevice target = ResolvePhysicalControllerTarget(slot);
+                if (target != null && WantsSonyBluetoothHaptics(target))
+                {
+                    try { lifetime.Dispose(); } catch { }
+                    AppLogger.LogToGui(
+                        $"VIIPER device reuse skipped for slot {slot + 1}: Sony Bluetooth haptics need a new device, creating one instead.",
+                        false);
+                    return null;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+            ViiperDeviceStream stream;
+            try
+            {
+                stream = client.OpenExistingDeviceStream(
+                    lifetime.BusId, lifetime.DevId, lifetime.UsbipPort, lifetime);
+            }
+            catch (Exception ex)
+            {
+                try { lifetime.Dispose(); } catch { }
+                AppLogger.LogToGui(
+                    $"VIIPER device reuse failed for slot {slot + 1}, creating a new device instead: {ex.Message}",
+                    false);
+                return null;
+            }
+            activeFeedbackLength = DualSenseCombinedExtendedFeedbackLength;
+            activeStreamUsesFramedProtocol = true;
+            activeStreamSupportsMicrophone = !gamepadOnly;
+            activeStreamSupportsDirectSpeaker = !gamepadOnly;
+            activeStreamSupportsAtomicAudioHaptics = !gamepadOnly;
+            activeStreamSupportsRealtimeHaptics = !gamepadOnly;
+            activeStreamUsesV5AudioSource = !gamepadOnly;
+            activeStreamUsesAudioOnlyDescriptor = audioOnlySidecar;
+            activeStreamFrameVersion = ViiperStreamFrameVersionV5;
+            Volatile.Write(ref activeHapticsConverter, stream.HapticsConverter);
+            requestedSonyBluetoothHaptics = false;
+            AppLogger.LogToGui(
+                $"VIIPER device reused for slot {slot + 1}: bus={lifetime.BusId} device={lifetime.DevId} port={lifetime.UsbipPort}",
+                false);
+            return stream;
         }
 
         private ViiperDeviceStream CreateDeviceStream()
@@ -2113,7 +2278,10 @@ namespace DS4Windows
             ViiperDeviceStream stream = Interlocked.Exchange(
                 ref deviceStream, null);
             Interlocked.Increment(ref streamGeneration);
-            stream?.Dispose();
+            if (!TryCacheViiperDeviceForReuse(stream))
+            {
+                stream?.Dispose();
+            }
             JoinStateWriterThread();
             if (UsesOrderedEgressScheduler())
             {
@@ -6746,6 +6914,13 @@ namespace DS4Windows
                             ApplyLightbar(device, DS4LightBar.BatteryHoldColor[deviceIndex].red, DS4LightBar.BatteryHoldColor[deviceIndex].green, DS4LightBar.BatteryHoldColor[deviceIndex].blue, 0, 0);
                             break;
                         }
+                        if (deviceIndex >= 0 && deviceIndex < DS4LightBar.ConnectHoldUntil.Length &&
+                            DS4LightBar.ConnectHoldUntil[deviceIndex] != DateTime.MinValue &&
+                            DateTime.UtcNow < DS4LightBar.ConnectHoldUntil[deviceIndex])
+                        {
+                            ApplyLightbar(device, DS4LightBar.ConnectHoldColor[deviceIndex].red, DS4LightBar.ConnectHoldColor[deviceIndex].green, DS4LightBar.ConnectHoldColor[deviceIndex].blue, 0, 0);
+                            break;
+                        }
                         if (ShouldApplyGameLightbar(deviceIndex))
                         {
                             ApplyLightbar(device, feedback[2], feedback[3],
@@ -6771,6 +6946,15 @@ namespace DS4Windows
                             if (feedbackLength >= 2)
                                 Program.rootHub.SetDevRumble(device, feedback[1], feedback[0], deviceIndex);
                             ApplyLightbar(device, DS4LightBar.BatteryHoldColor[deviceIndex].red, DS4LightBar.BatteryHoldColor[deviceIndex].green, DS4LightBar.BatteryHoldColor[deviceIndex].blue, 0, 0);
+                            break;
+                        }
+                        if (deviceIndex >= 0 && deviceIndex < DS4LightBar.ConnectHoldUntil.Length &&
+                            DS4LightBar.ConnectHoldUntil[deviceIndex] != DateTime.MinValue &&
+                            DateTime.UtcNow < DS4LightBar.ConnectHoldUntil[deviceIndex])
+                        {
+                            if (feedbackLength >= 2)
+                                Program.rootHub.SetDevRumble(device, feedback[1], feedback[0], deviceIndex);
+                            ApplyLightbar(device, DS4LightBar.ConnectHoldColor[deviceIndex].red, DS4LightBar.ConnectHoldColor[deviceIndex].green, DS4LightBar.ConnectHoldColor[deviceIndex].blue, 0, 0);
                             break;
                         }
                         bool nativeForwardingAllowed = IsNativeDualSenseFeedbackCompatible(device);
@@ -10133,6 +10317,10 @@ namespace DS4Windows
                 DS4LightBar.BatteryHoldUntil[deviceIndex] != DateTime.MinValue &&
                 DateTime.UtcNow < DS4LightBar.BatteryHoldUntil[deviceIndex])
                 return false;
+            if (deviceIndex >= 0 && deviceIndex < DS4LightBar.ConnectHoldUntil.Length &&
+                DS4LightBar.ConnectHoldUntil[deviceIndex] != DateTime.MinValue &&
+                DateTime.UtcNow < DS4LightBar.ConnectHoldUntil[deviceIndex])
+                return false;
             return deviceIndex >= 0 &&
                 deviceIndex < Global.TEST_PROFILE_ITEM_COUNT &&
                 Global.getLightbarSettingsInfo(deviceIndex).mode ==
@@ -11423,6 +11611,18 @@ namespace DS4Windows
                 },
                 port => DetachPort(port, "stale local VIIPER controller import"),
                 Thread.Sleep);
+            // 2026-11-01 DualSense audio name fix: usbip detach alone
+            // leaves the stale USB audio device and its endpoints
+            // registered, so the next import is named "2 - DualSense".
+            // Remove stale non-present USB VID_054C PID_0CE6 MI_00
+            // audio devices, and any orphaned non-active DualSense
+            // endpoint registry keys, BEFORE the next virtual device
+            // is imported, so it gets the plain name. This runs at
+            // DS4 startup and at the start of every VIIPER attach,
+            // and it never throws, so it cannot break input.
+            // It never removes a present device, a Bluetooth device,
+            // or a HID/composite function.
+            DualSenseAudioEndpointCleanup.CleanupStaleDualSenseAudioDevices();
             startupPortRecoveryCompleted = true;
         }
 

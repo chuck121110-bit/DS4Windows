@@ -739,7 +739,7 @@ namespace DS4Windows.InputDevices
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x0A, 0x07, 0x00,
-            0x00, 0x02, 0x01, 0x00, 0xFF, 0xD7, 0x00, 0x00,
+            0x00, 0x02, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         };
@@ -4287,9 +4287,11 @@ namespace DS4Windows.InputDevices
                 // do not publish ownership before the physical write proves
                 // success. Otherwise a failed LED claim can hide the profile
                 // while a failed release can expose it prematurely.
+                // In DS4Win mode a native claim is rejected outright.
                 outputState = outputState with
                 {
                     NativeGameLightbarOwnershipReleased =
+                        IsDs4WinLightbarMode() ||
                         ledOwnershipUpdate < 0,
                 };
             }
@@ -4309,6 +4311,7 @@ namespace DS4Windows.InputDevices
             {
                 physicalOutputStateMailbox.
                     SetNativeGameLightbarOwnershipReleased(
+                        IsDs4WinLightbarMode() ||
                         ledOwnershipUpdate < 0);
             }
 
@@ -6651,12 +6654,16 @@ namespace DS4Windows.InputDevices
                         bluetoothCombinedNativeStateScratch);
                     latestBluetoothCombinedNativeStateTimestamp =
                         Stopwatch.GetTimestamp();
-                    if (outputState.NativeGameLightbarOwnershipReleased)
+                    if (outputState.NativeGameLightbarOwnershipReleased ||
+                        IsDs4WinLightbarMode())
                     {
                         // Sony's release bit is an immediate ownership
                         // boundary. Publish the profile lightbar and player
                         // LEDs in this same atomic carrier instead of waiting
                         // for an unrelated later state/media callback.
+                        // In DS4Win mode this is unconditional: a native
+                        // claim was rejected above, so the native player LED
+                        // mask and lightbar color are never in this report.
                         MergeProfileLightbarIntoV5AudioSnapshot(outputState,
                             latestBluetoothCombinedSpeakerReport,
                             BluetoothCombinedStateOffset);
@@ -6671,11 +6678,47 @@ namespace DS4Windows.InputDevices
                             BluetoothCombinedStateOffset);
                     }
                     else if (outputState.
-                        NativeGameLightbarOwnershipReleased)
+                        NativeGameLightbarOwnershipReleased ||
+                        IsDs4WinLightbarMode())
                     {
                         MergeProfileLightbarIntoV5AudioSnapshot(outputState,
                             latestBluetoothCombinedSpeakerReport,
                             BluetoothCombinedStateOffset);
+                    }
+                }
+                // Connect hold, after profile merge, battery still wins:
+                // if a connect hold is active and no battery hold is active,
+                // override this same packet with the connect color.
+                {
+                    bool batteryActiveBt = false;
+                    for (int bi = 0; bi < DS4LightBar.BatteryHoldUntil.Length; bi++)
+                    {
+                        if (DS4LightBar.BatteryHoldUntil[bi] != DateTime.MinValue &&
+                            DateTime.UtcNow < DS4LightBar.BatteryHoldUntil[bi]) { batteryActiveBt = true; break; }
+                    }
+                    if (!batteryActiveBt)
+                    {
+                        for (int ci = 0; ci < DS4LightBar.ConnectHoldUntil.Length; ci++)
+                        {
+                            if (DS4LightBar.ConnectHoldUntil[ci] != DateTime.MinValue &&
+                                DateTime.UtcNow < DS4LightBar.ConnectHoldUntil[ci])
+                            {
+                                var connectSnapshot = outputState with
+                                {
+                                    ProfileLightbar = new DS4LightbarState
+                                    {
+                                        LightBarColor = DS4LightBar.ConnectHoldColor[ci],
+                                        LightBarFlashDurationOn = 0,
+                                        LightBarFlashDurationOff = 0,
+                                        LightBarExplicitlyOff = true,
+                                    },
+                                };
+                                MergeProfileLightbarIntoV5AudioSnapshot(connectSnapshot,
+                                    latestBluetoothCombinedSpeakerReport,
+                                    BluetoothCombinedStateOffset);
+                                break;
+                            }
+                        }
                     }
                 }
                 // A native HID SET_REPORT is state-only. VIIPER attaches the
@@ -6793,7 +6836,8 @@ namespace DS4Windows.InputDevices
                     bluetoothCombinedNativeStateScratch);
                 latestBluetoothCombinedNativeStateTimestamp =
                     Stopwatch.GetTimestamp();
-                if (outputState.NativeGameLightbarOwnershipReleased)
+                if (outputState.NativeGameLightbarOwnershipReleased ||
+                    IsDs4WinLightbarMode())
                 {
                     MergeProfileLightbarIntoV5AudioSnapshot(outputState,
                         latestBluetoothCombinedSpeakerReport,
@@ -7298,8 +7342,34 @@ namespace DS4Windows.InputDevices
             return controlsPlayer || controlsLightbar ? 1 : 0;
         }
 
+        // 2026-11-01: in DS4Win mode DS4Windows owns the lightbar and the
+        // player LEDs. A native game report must not claim them, not even
+        // for one packet at connect. This is not an override sent after
+        // the fact: the claim is rejected here at admission, so the native
+        // player LED mask and lightbar color never enter a physical report.
+        // In Passthru mode this does nothing, a game is supposed to own
+        // the LEDs there.
+        private bool IsDs4WinLightbarMode()
+        {
+            try
+            {
+                int slot = DeviceSlotNumber;
+                return slot >= 0 &&
+                    Global.getLightbarSettingsInfo(slot).mode ==
+                        LightbarMode.DS4Win;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private void PublishNativeGameLightbarOwnership(bool released)
         {
+            if (!released && IsDs4WinLightbarMode())
+            {
+                return;
+            }
             if (physicalOutputStateMailbox.
                 SetNativeGameLightbarOwnershipReleased(released))
             {
@@ -8223,6 +8293,29 @@ namespace DS4Windows.InputDevices
                 {
                     color = DS4LightBar.BatteryHoldColor[bi];
                     break;
+                }
+            }
+            // Connect hold, battery still wins: if no battery hold was
+            // applied above, a connect hold color wins in this report.
+            if (!color.HasValue || true)
+            {
+                bool batteryActiveDsx = false;
+                for (int bi = 0; bi < DS4LightBar.BatteryHoldUntil.Length; bi++)
+                {
+                    if (DS4LightBar.BatteryHoldUntil[bi] != DateTime.MinValue &&
+                        DateTime.UtcNow < DS4LightBar.BatteryHoldUntil[bi]) { batteryActiveDsx = true; break; }
+                }
+                if (!batteryActiveDsx)
+                {
+                    for (int ci = 0; ci < DS4LightBar.ConnectHoldUntil.Length; ci++)
+                    {
+                        if (DS4LightBar.ConnectHoldUntil[ci] != DateTime.MinValue &&
+                            DateTime.UtcNow < DS4LightBar.ConnectHoldUntil[ci])
+                        {
+                            color = DS4LightBar.ConnectHoldColor[ci];
+                            break;
+                        }
+                    }
                 }
             }
             if (color.HasValue)
