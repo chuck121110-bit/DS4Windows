@@ -2599,7 +2599,43 @@ namespace DS4Windows
                         string tempType = slotDevice.CurrentType.ToDisplayName();
                         LogDebug($"Disassociated virtual {tempType} Controller in{(slotDevice.CurrentReserveStatus == OutSlotDevice.ReserveStatus.Permanent ? " permanent" : "")} output slot #{slotDevice.Index + 1} from input controller #{index + 1} ({device.DisplayName})", false);
 
-                        if ((slotDevice.CurrentAttachedStatus == OutSlotDevice.AttachedStatus.Attached &&
+                        if (force)
+                        {
+                            // Forced removal (DS4 stop, forced replacement):
+                            // destroy the virtual device exactly as before.
+                            outputslotMan.DeferredRemoval(dev, index, outputDevices, immediate);
+                            if (outputslotMan.GetOutSlotDevice(dev) != null)
+                                throw new InvalidOperationException("The virtual output remains registered after removal.");
+                            outputCleanupCompleted = true;
+                        }
+                        else if (dev is ViiperOutDevice)
+                        {
+                            // 2026-11-02 same device ID keep-alive: on a
+                            // physical disconnect while DS4 keeps running,
+                            // do NOT destroy the virtual device. Release
+                            // only the input binding (TryReleaseBoundOutput
+                            // sends neutral state via ResetState), so the
+                            // VIIPER device, its Windows instance ID, and
+                            // its audio endpoint GUIDs stay alive. On
+                            // reconnect PluginOutDev rebinds this exact
+                            // attached, unbound output instead of creating
+                            // a new bus/device. Fall back to the old
+                            // destroy path only if the release fails.
+                            if (slotDevice.CurrentAttachedStatus == OutSlotDevice.AttachedStatus.Attached &&
+                                outputslotMan.TryReleaseBoundOutput(dev, outputDevices, index))
+                            {
+                                LogDebug($"Keep-alive: virtual {tempType} Controller in output slot #{slotDevice.Index + 1} retained, not destroyed, so it keeps the same Windows device ID on reconnect", false);
+                                outputCleanupCompleted = true;
+                            }
+                            else
+                            {
+                                outputslotMan.DeferredRemoval(dev, index, outputDevices, immediate);
+                                if (outputslotMan.GetOutSlotDevice(dev) != null)
+                                    throw new InvalidOperationException("The virtual output remains registered after removal.");
+                                outputCleanupCompleted = true;
+                            }
+                        }
+                        else if ((slotDevice.CurrentAttachedStatus == OutSlotDevice.AttachedStatus.Attached &&
                             slotDevice.CurrentReserveStatus == OutSlotDevice.ReserveStatus.Dynamic) || force)
                         {
                             outputslotMan.DeferredRemoval(dev, index, outputDevices, immediate);
@@ -4145,6 +4181,27 @@ namespace DS4Windows
             }
         }
 
+        private void RetainPlayStationFeatureOutputForKeepAlive(int index)
+        {
+            ViiperOutDevice sidecar = null;
+            lock (playStationFeatureOutputLock)
+            {
+                if (index >= 0 && index < playStationFeatureOutputDevices.Length)
+                    sidecar = playStationFeatureOutputDevices[index];
+            }
+            if (sidecar == null)
+                return;
+            if (sidecar.IsRuntimeConnected)
+            {
+                try { sidecar.ResetState(); } catch { }
+                LogDebug($"Keep-alive: PlayStation audio sidecar {sidecar.OutputType} for controller #{index + 1} retained, not destroyed, so it keeps the same Windows device ID on reconnect", false);
+            }
+            else
+            {
+                DisconnectPlayStationFeatureOutput(index);
+            }
+        }
+
         private void StopAllPlayStationFeatureOutputs()
         {
             for (int index = 0; index <
@@ -5134,7 +5191,12 @@ namespace DS4Windows
             dualShock4AudioPassthrough.Stop(index);
             dualSenseMicrophonePassthrough.Stop();
             audioHapticsService.Stop(index);
-            DisconnectPlayStationFeatureOutput(index);
+            // 2026-11-02 same device ID keep-alive: on physical removal,
+            // retain a live PlayStation audio sidecar instead of
+            // destroying it, so a reconnect reuses it (Ensure already
+            // reuses a runtime-connected sidecar of the same type).
+            // DS4 stop still destroys it via StopAllPlayStationFeatureOutputs.
+            RetainPlayStationFeatureOutputForKeepAlive(index);
         }
 
         private static void CommitNeutralMapping(int index)

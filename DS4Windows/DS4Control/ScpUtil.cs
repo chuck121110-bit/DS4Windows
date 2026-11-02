@@ -6568,7 +6568,7 @@ namespace DS4Windows
                     {
                         tempDev.queueEvent(() =>
                         {
-                            control.UnplugOutDev(device, tempDev);
+                            control.UnplugOutDev(device, tempDev, force: true); // 2026-11-02 same ID keep-alive: profile output transition, not a physical disconnect, so destroy the old output instead of retaining it
                         });
                     }
                 }
@@ -9380,7 +9380,7 @@ namespace DS4Windows
                     {
                         tempDev.queueEvent(() =>
                         {
-                            control.UnplugOutDev(device, tempDev);
+                            control.UnplugOutDev(device, tempDev, force: true); // 2026-11-02 same ID keep-alive: profile output transition, not a physical disconnect, so destroy the old output instead of retaining it
                         });
                     }
                 }
@@ -12022,7 +12022,7 @@ namespace DS4Windows
                                 if (tempOutDev != null)
                                 {
                                     //Global.activeOutDevType[device] = OutContType.None;
-                                    control.UnplugOutDev(device, tempDev);
+                                    control.UnplugOutDev(device, tempDev, force: true); // 2026-11-02 same ID keep-alive: profile output transition, not a physical disconnect, so destroy the old output instead of retaining it
                                     ControlService.StartupDiag($"Profile output transition unplugged index={device}");
                                 }
                             }
@@ -12076,7 +12076,7 @@ namespace DS4Windows
                         else
                         {
                             //Global.activeOutDevType[device] = OutContType.None;
-                            control.UnplugOutDev(device, tempDev);
+                            control.UnplugOutDev(device, tempDev, force: true); // 2026-11-02 same ID keep-alive: profile output transition, not a physical disconnect, so destroy the old output instead of retaining it
                         }
                     }
 
