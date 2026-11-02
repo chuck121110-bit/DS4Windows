@@ -1342,17 +1342,43 @@ namespace DS4Windows
         // VIIPER's server-side serial from its create request.
         // On process exit, cached lifetimes are disposed normally,
         // so a DS4 shutdown still removes the virtual device.
-        // A different output type or MAC for the same slot mismatches
-        // the cache key, so that change still creates a new device,
-        // and the old cached device for that slot is disposed then,
-        // so it does not stay orphaned in Windows.
-        // Reuse is limited to DualSense/DualSenseEdge, and skipped
-        // when Sony Bluetooth haptics are requested, because a
-        // reopened stream always gets the Legacy haptics converter.
-        // Any reuse failure falls back to creating a new device.
+        // 2026-11-02 follow-up, general reuse, all types/controllers:
+        // A different output type, sidecar flag, or MAC for the same
+        // slot is a different cache key, so that change still creates
+        // a new device, but the old keys for that slot are NOT
+        // disposed on a switch. Up to 4 entries per slot are kept,
+        // keyed by slot + viiperType + outputType + gamepadOnly +
+        // audioOnlySidecar + physical MAC, so DualSense -> Xbox One
+        // -> DualSense reuses the first DualSense bus/device instead
+        // of creating bus=3, bus=4, and so on, and a friend's
+        // different controller gets its own cache entry and never
+        // collides with Chuck's. Only the oldest excess entry past
+        // 4 per slot is disposed, and all entries are disposed on
+        // DS4 process exit, as before.
+        // Sony Bluetooth haptics are NOT a skip reason any more.
+        // RecoverStreamAsOwner already reopens an existing stream
+        // without changing activeHapticsConverter, because that
+        // field lives on ViiperOutDevice, not on the stream. The
+        // cache therefore stores the converter and the requested
+        // Sony flag at cache time, and reuse restores them, instead
+        // of overwriting them with the reopened stream's default
+        // Legacy/box16 converter. If the restored converter cannot
+        // be reused for the current target, reuse falls back to a
+        // new device, as before. Any reuse failure falls back to
+        // creating a new device.
+        // The only exclusion is an Xbox One authorized persona
+        // lifetime (XboxOneRegistration != null), because
+        // OpenExistingDeviceStream throws for those by design.
         private static readonly object ViiperReuseCacheLock = new object();
-        private static readonly Dictionary<string, ViiperVirtualDeviceLifetime> ViiperReuseCache =
-            new Dictionary<string, ViiperVirtualDeviceLifetime>();
+        private sealed class ViiperReuseEntry
+        {
+            public ViiperVirtualDeviceLifetime Lifetime;
+            public string HapticsConverter;
+            public bool RequestedSonyBluetoothHaptics;
+        }
+
+        private static readonly Dictionary<string, ViiperReuseEntry> ViiperReuseCache =
+            new Dictionary<string, ViiperReuseEntry>();
         private static int ViiperReuseCacheExitHookRegistered = 0;
         private static void EnsureViiperReuseCacheExitHook()
         {
@@ -1362,9 +1388,9 @@ namespace DS4Windows
                 {
                     lock (ViiperReuseCacheLock)
                     {
-                        foreach (ViiperVirtualDeviceLifetime lifetime in ViiperReuseCache.Values)
+                        foreach (ViiperReuseEntry entry in ViiperReuseCache.Values)
                         {
-                            try { lifetime.Dispose(); } catch { }
+                            try { entry?.Lifetime?.Dispose(); } catch { }
                         }
                         ViiperReuseCache.Clear();
                     }
@@ -1389,10 +1415,15 @@ namespace DS4Windows
         }
         private bool TryCacheViiperDeviceForReuse(ViiperDeviceStream stream)
         {
-            if (stream == null || viiperType == ViiperVirtualDeviceType.XboxOne)
+            if (stream == null)
                 return false;
             ViiperVirtualDeviceLifetime lifetime = stream.DeviceLifetime;
             if (lifetime == null || lifetime.IsDisposed || stream.UsbipPort <= 0)
+                return false;
+            // Xbox One authorized personas cannot be reopened:
+            // OpenExistingDeviceStream throws for them by design.
+            // Ordinary, non-authorized lifetimes are cacheable.
+            if (lifetime.XboxOneRegistration != null)
                 return false;
             int slot = Volatile.Read(ref lastInputDeviceIndex);
             if (slot < 0)
@@ -1402,18 +1433,45 @@ namespace DS4Windows
                 return false;
             string key = BuildViiperReuseKey(slot, mac);
             EnsureViiperReuseCacheExitHook();
+            string cachedConverter = Volatile.Read(ref activeHapticsConverter);
+            bool cachedRequestedSony = requestedSonyBluetoothHaptics;
             lock (ViiperReuseCacheLock)
             {
-                string slotPrefix = $"{slot}:";
-                foreach (string oldKey in new System.Collections.Generic.List<string>(ViiperReuseCache.Keys))
+                ViiperReuseCache[key] = new ViiperReuseEntry
                 {
-                    if (oldKey.StartsWith(slotPrefix, StringComparison.Ordinal) && oldKey != key)
+                    Lifetime = lifetime,
+                    HapticsConverter = cachedConverter,
+                    RequestedSonyBluetoothHaptics = cachedRequestedSony,
+                };
+                // General reuse: do NOT dispose other keys for this
+                // slot on a profile switch. Keep up to 4 entries
+                // per slot, dispose only the oldest excess entry.
+                string slotPrefix = $"{slot}:";
+                while (true)
+                {
+                    System.Collections.Generic.List<string> slotKeys =
+                        new System.Collections.Generic.List<string>();
+                    foreach (string k in ViiperReuseCache.Keys)
                     {
-                        try { ViiperReuseCache[oldKey].Dispose(); } catch { }
-                        ViiperReuseCache.Remove(oldKey);
+                        if (k.StartsWith(slotPrefix, StringComparison.Ordinal))
+                            slotKeys.Add(k);
                     }
+                    if (slotKeys.Count <= 4)
+                        break;
+                    string excess = null;
+                    foreach (string k in slotKeys)
+                    {
+                        if (!string.Equals(k, key, StringComparison.Ordinal))
+                        {
+                            excess = k;
+                            break;
+                        }
+                    }
+                    if (excess == null)
+                        break;
+                    try { ViiperReuseCache[excess]?.Lifetime?.Dispose(); } catch { }
+                    ViiperReuseCache.Remove(excess);
                 }
-                ViiperReuseCache[key] = lifetime;
             }
             // Close only the TCP transport, like RecoverStreamAsOwner.
             // Do NOT dispose the stream or its lifetime here, or VIIPER
@@ -1427,38 +1485,55 @@ namespace DS4Windows
         }
         private ViiperDeviceStream TryReuseCachedViiperDevice(int slot)
         {
-            if (viiperType != ViiperVirtualDeviceType.DualSense &&
-                viiperType != ViiperVirtualDeviceType.DualSenseEdge)
-                return null;
             if (slot < 0)
                 return null;
             string mac = GetViiperReuseMac(slot);
             if (string.IsNullOrWhiteSpace(mac))
                 return null;
             string key = BuildViiperReuseKey(slot, mac);
-            ViiperVirtualDeviceLifetime lifetime;
+            ViiperReuseEntry entry;
             lock (ViiperReuseCacheLock)
             {
-                if (!ViiperReuseCache.TryGetValue(key, out lifetime))
+                if (!ViiperReuseCache.TryGetValue(key, out entry))
                     return null;
                 ViiperReuseCache.Remove(key);
             }
+            ViiperVirtualDeviceLifetime lifetime = entry?.Lifetime;
             if (lifetime == null || lifetime.IsDisposed)
                 return null;
+            if (lifetime.XboxOneRegistration != null)
+            {
+                try { lifetime.Dispose(); } catch { }
+                return null;
+            }
+            // Sony Bluetooth haptics: do NOT skip reuse. Restore the
+            // cached converter/requested flag, then check CanReuse
+            // with those cached values, exactly as
+            // BindPhysicalController will. If the cached converter
+            // cannot be reused for the current target, fall back
+            // to a new device, as before, instead of throwing later.
+            DualSenseDevice hapticsTarget = null;
             try
             {
-                DualSenseDevice target = ResolvePhysicalControllerTarget(slot);
-                if (target != null && WantsSonyBluetoothHaptics(target))
-                {
-                    try { lifetime.Dispose(); } catch { }
-                    AppLogger.LogToGui(
-                        $"VIIPER device reuse skipped for slot {slot + 1}: Sony Bluetooth haptics need a new device, creating one instead.",
-                        false);
-                    return null;
-                }
+                hapticsTarget = ResolvePhysicalControllerTarget(slot);
             }
             catch
             {
+                return null;
+            }
+            string cachedConverter = entry.HapticsConverter;
+            if (string.IsNullOrWhiteSpace(cachedConverter))
+                cachedConverter = ViiperHapticsConverter.Legacy;
+            bool cachedRequestedSony = entry.RequestedSonyBluetoothHaptics;
+            if (NegotiatesHapticsConverter &&
+                !ViiperHapticsConverter.CanReuse(cachedConverter,
+                    cachedRequestedSony,
+                    WantsSonyBluetoothHaptics(hapticsTarget)))
+            {
+                try { lifetime.Dispose(); } catch { }
+                AppLogger.LogToGui(
+                    $"VIIPER device reuse skipped for slot {slot + 1}: cached haptics converter {cachedConverter} cannot be reused for this controller, creating a new device instead.",
+                    false);
                 return null;
             }
             ViiperDeviceStream stream;
@@ -1475,17 +1550,67 @@ namespace DS4Windows
                     false);
                 return null;
             }
-            activeFeedbackLength = DualSenseCombinedExtendedFeedbackLength;
-            activeStreamUsesFramedProtocol = true;
-            activeStreamSupportsMicrophone = !gamepadOnly;
-            activeStreamSupportsDirectSpeaker = !gamepadOnly;
-            activeStreamSupportsAtomicAudioHaptics = !gamepadOnly;
-            activeStreamSupportsRealtimeHaptics = !gamepadOnly;
-            activeStreamUsesV5AudioSource = !gamepadOnly;
-            activeStreamUsesAudioOnlyDescriptor = audioOnlySidecar;
-            activeStreamFrameVersion = ViiperStreamFrameVersionV5;
-            Volatile.Write(ref activeHapticsConverter, stream.HapticsConverter);
-            requestedSonyBluetoothHaptics = false;
+            // Stream flags mirror CreateDeviceStream for this type,
+            // so a reused DualShock audio sidecar, Xbox360, or
+            // Switch2 device does not get DualSense V5 flags.
+            if (viiperType == ViiperVirtualDeviceType.DualSense ||
+                viiperType == ViiperVirtualDeviceType.DualSenseEdge)
+            {
+                activeFeedbackLength = DualSenseCombinedExtendedFeedbackLength;
+                activeStreamUsesFramedProtocol = true;
+                activeStreamSupportsMicrophone = !gamepadOnly;
+                activeStreamSupportsDirectSpeaker = !gamepadOnly;
+                activeStreamSupportsAtomicAudioHaptics = !gamepadOnly;
+                activeStreamSupportsRealtimeHaptics = !gamepadOnly;
+                activeStreamUsesV5AudioSource = !gamepadOnly;
+                activeStreamUsesAudioOnlyDescriptor = audioOnlySidecar;
+                activeStreamFrameVersion = ViiperStreamFrameVersionV5;
+            }
+            else if (viiperType == ViiperVirtualDeviceType.DualShock4)
+            {
+                activeFeedbackLength = ViiperStatePacketBuilder
+                    .GetFeedbackLength(viiperType);
+                if (gamepadOnly)
+                {
+                    activeStreamUsesFramedProtocol = false;
+                    activeStreamSupportsMicrophone = false;
+                    activeStreamSupportsDirectSpeaker = false;
+                    activeStreamUsesAudioOnlyDescriptor = false;
+                    activeStreamFrameVersion = 0;
+                }
+                else
+                {
+                    activeStreamUsesFramedProtocol = true;
+                    activeStreamSupportsMicrophone = true;
+                    activeStreamSupportsDirectSpeaker = true;
+                    activeStreamUsesAudioOnlyDescriptor = audioOnlySidecar;
+                    activeStreamFrameVersion = ViiperStreamFrameVersionV3;
+                }
+                activeStreamSupportsAtomicAudioHaptics = false;
+                activeStreamSupportsRealtimeHaptics = false;
+                activeStreamUsesV5AudioSource = false;
+            }
+            else
+            {
+                activeFeedbackLength = ViiperStatePacketBuilder
+                    .GetFeedbackLength(viiperType);
+                activeStreamUsesFramedProtocol = false;
+                activeStreamSupportsMicrophone = false;
+                activeStreamSupportsDirectSpeaker = false;
+                activeStreamSupportsAtomicAudioHaptics = false;
+                activeStreamSupportsRealtimeHaptics = false;
+                activeStreamUsesV5AudioSource = false;
+                activeStreamUsesAudioOnlyDescriptor = false;
+                activeStreamFrameVersion = 0;
+            }
+            // Restore the cached haptics converter, do NOT overwrite
+            // it with the reopened stream's default Legacy/box16.
+            // The server-side device still has the cached converter,
+            // and RecoverStreamAsOwner already proves that reopening
+            // an existing stream must not change this field.
+            Volatile.Write(ref activeHapticsConverter, cachedConverter);
+            requestedSonyBluetoothHaptics = cachedRequestedSony;
+            try { ApproveHapticsConverterTarget(hapticsTarget); } catch { }
             AppLogger.LogToGui(
                 $"VIIPER device reused for slot {slot + 1}: bus={lifetime.BusId} device={lifetime.DevId} port={lifetime.UsbipPort}",
                 false);
@@ -10914,6 +11039,12 @@ namespace DS4Windows
         {
             ArgumentNullException.ThrowIfNull(createDevice);
             ViiperUsbipPortManager.DetachStaleLocalViiperPorts();
+            // 2026-11-02 follow-up: also clean explicitly here, right
+            // before bus/create, so ghosts are removed before a new
+            // VIIPER device is imported on every creation, including
+            // profile switches mid-session, not only at DS4 startup.
+            // This never throws, so it cannot break input.
+            DualSenseAudioEndpointCleanup.CleanupStaleDualSenseAudioDevices();
 
             ViiperBusCreateResponse bus = SendRequest<ViiperBusCreateResponse>(
                 "bus/create", "0");

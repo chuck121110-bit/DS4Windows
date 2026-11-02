@@ -75,10 +75,21 @@ namespace DS4Windows
     /// </summary>
     internal static class DualSenseAudioEndpointCleanup
     {
-        private const string StaleDevicePrefix =
-            @"USB\VID_054C&PID_0CE6&MI_00\";
-        private const string DualSenseEndpointName =
-            "DualSense Wireless Controller";
+        private static bool IsSonyUsbAudioDeviceId(string instanceId)
+        {
+            if (string.IsNullOrWhiteSpace(instanceId))
+                return false;
+            return instanceId.StartsWith(@"USB\VID_054C&PID_", StringComparison.OrdinalIgnoreCase) &&
+                instanceId.IndexOf("&MI_00\\", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool IsSonyAudioEndpointName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return false;
+            return name.IndexOf("DualSense", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                name.IndexOf("DualShock", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
 
         public static void CleanupStaleDualSenseAudioDevices()
         {
@@ -185,8 +196,7 @@ namespace DS4Windows
 
                     string instanceId = new string(instanceIdBuffer)
                         .TrimEnd('\0');
-                    if (instanceId.StartsWith(StaleDevicePrefix,
-                        StringComparison.OrdinalIgnoreCase))
+                    if (IsSonyUsbAudioDeviceId(instanceId))
                     {
                         result.Add(instanceId);
                     }
@@ -247,11 +257,19 @@ namespace DS4Windows
                 }
 
                 List<string> instanceIds = EnumerateDisconnectedDualSenseAudioEndpoints();
+                foreach (string ghostId in EnumerateUnknownSonyAudioEndpoints())
+                {
+                    if (!instanceIds.Contains(ghostId))
+                        instanceIds.Add(ghostId);
+                }
+
+                int removedEndpoints = 0;
                 foreach (string instanceId in instanceIds)
                 {
                     try
                     {
                         RunPnputil(new[] { "/remove-device", instanceId });
+                        removedEndpoints++;
                         Log($"Removed disconnected DualSense audio endpoint {instanceId}.");
                     }
                     catch (Exception ex)
@@ -259,10 +277,119 @@ namespace DS4Windows
                         Log($"Could not remove disconnected DualSense audio endpoint {instanceId}: {ex.GetType().Name}: {ex.Message}");
                     }
                 }
+                if (removedEndpoints > 0)
+                    Thread.Sleep(500);
             }
             catch (Exception ex)
             {
                 Log($"DualSense disconnected endpoint cleanup skipped: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        private static List<string> EnumerateUnknownSonyAudioEndpoints()
+        {
+            List<string> result = new List<string>();
+            try
+            {
+                Dictionary<string, string> all = EnumerateSwdAudioEndpoints(
+                    NativeMethods.DIGCF_ALLCLASSES);
+                HashSet<string> present = new HashSet<string>(
+                    EnumerateSwdAudioEndpoints(
+                        NativeMethods.DIGCF_ALLCLASSES | NativeMethods.DIGCF_PRESENT).Keys,
+                    StringComparer.OrdinalIgnoreCase);
+                foreach (KeyValuePair<string, string> pair in all)
+                {
+                    if (!present.Contains(pair.Key) &&
+                        IsSonyAudioEndpointName(pair.Value) &&
+                        pair.Key.StartsWith(@"SWD\MMDEVAPI\",
+                            StringComparison.OrdinalIgnoreCase) &&
+                        !result.Contains(pair.Key))
+                    {
+                        result.Add(pair.Key);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Sony Unknown endpoint enumeration failed, continuing with pnputil list only: {ex.GetType().Name}: {ex.Message}");
+            }
+            return result;
+        }
+
+        private static Dictionary<string, string> EnumerateSwdAudioEndpoints(int flags)
+        {
+            Dictionary<string, string> result = new Dictionary<string, string>(
+                StringComparer.OrdinalIgnoreCase);
+            IntPtr deviceInfoSet = NativeMethods.SetupDiGetClassDevs(
+                IntPtr.Zero, "SWD", 0, flags);
+            if (deviceInfoSet.ToInt64() == NativeMethods.INVALID_HANDLE_VALUE)
+                return result;
+            try
+            {
+                for (int index = 0; ; index++)
+                {
+                    NativeMethods.SP_DEVINFO_DATA deviceInfoData =
+                        new NativeMethods.SP_DEVINFO_DATA
+                        {
+                            cbSize = Marshal.SizeOf<NativeMethods.SP_DEVINFO_DATA>(),
+                        };
+                    if (!NativeMethods.SetupDiEnumDeviceInfo(
+                        deviceInfoSet, index, ref deviceInfoData))
+                        break;
+                    char[] instanceIdBuffer = new char[NativeMethods.MAX_DEV_LEN];
+                    int requiredSize = 0;
+                    if (!NativeMethods.SetupDiGetDeviceInstanceId(
+                        deviceInfoSet, ref deviceInfoData, instanceIdBuffer,
+                        instanceIdBuffer.Length, ref requiredSize))
+                        continue;
+                    string instanceId = new string(instanceIdBuffer).TrimEnd('\0');
+                    if (!instanceId.StartsWith(@"SWD\MMDEVAPI\",
+                        StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    string friendly = GetDeviceRegistryString(
+                        deviceInfoSet, ref deviceInfoData,
+                        NativeMethods.SPDRP_FRIENDLYNAME);
+                    if (string.IsNullOrWhiteSpace(friendly))
+                        friendly = GetDeviceRegistryString(
+                            deviceInfoSet, ref deviceInfoData,
+                            NativeMethods.SPDRP_DEVICEDESC);
+                    result[instanceId] = friendly ?? string.Empty;
+                }
+            }
+            finally
+            {
+                NativeMethods.SetupDiDestroyDeviceInfoList(deviceInfoSet);
+            }
+            return result;
+        }
+
+        private static string GetDeviceRegistryString(IntPtr deviceInfoSet,
+            ref NativeMethods.SP_DEVINFO_DATA deviceInfoData, int property)
+        {
+            try
+            {
+                int regDataType = 0;
+                int requiredSize = 0;
+                byte[] probe = new byte[2];
+                NativeMethods.SetupDiGetDeviceRegistryProperty(
+                    deviceInfoSet, ref deviceInfoData, property,
+                    ref regDataType, probe, probe.Length, ref requiredSize);
+                if (requiredSize <= 0)
+                    return null;
+                byte[] buffer = new byte[requiredSize];
+                int regDataType2 = 0;
+                int requiredSize2 = 0;
+                if (!NativeMethods.SetupDiGetDeviceRegistryProperty(
+                    deviceInfoSet, ref deviceInfoData, property,
+                    ref regDataType2, buffer, buffer.Length, ref requiredSize2))
+                    return null;
+                string text = System.Text.Encoding.Unicode.GetString(
+                    buffer, 0, Math.Max(0, requiredSize2 - 2));
+                return string.IsNullOrWhiteSpace(text) ? null : text.TrimEnd('\0').Trim();
+            }
+            catch
+            {
+                return null;
             }
         }
 
@@ -292,8 +419,7 @@ namespace DS4Windows
                     !string.IsNullOrWhiteSpace(currentDescription) &&
                     string.Equals(currentClass, "AudioEndpoint",
                         StringComparison.OrdinalIgnoreCase) &&
-                    currentDescription.IndexOf("DualSense",
-                        StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    IsSonyAudioEndpointName(currentDescription) &&
                     currentInstanceId.StartsWith(@"SWD\MMDEVAPI\",
                         StringComparison.OrdinalIgnoreCase) &&
                     !instanceIds.Contains(currentInstanceId))
