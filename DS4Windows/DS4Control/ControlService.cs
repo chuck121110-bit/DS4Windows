@@ -2954,6 +2954,8 @@ namespace DS4Windows
                     // discovery or DS4Windows will ingest its own VIIPER DS4,
                     // create a second output/UAC endpoint, and recurse.
                     ViiperUsbipPortManager.RecoverStaleLocalViiperPortsAtStartup();
+                    // 2026-11-02 numbered audio fixer, DS4 startup scan.
+                    NumberedAudioEndpointFixer.RunPreCreationScan();
                     // Let usbccgp/HID finish publishing removal before the
                     // first input snapshot; otherwise a detached interface can
                     // remain enumerable for one final discovery pass.
