@@ -1,4 +1,4 @@
-﻿/*
+/*
 DS4Windows
 Copyright (C) 2023  Travis Nickles
 
@@ -9,11 +9,11 @@ the Free Software Foundation, either version 3 of the License, or
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
+the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
+along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
 using System;
@@ -35,6 +35,14 @@ namespace DS4WinWPF.DS4Forms.ViewModels.SpecialActions
         private int value;
         private int pressReleaseIndex = 0;
         private bool normalTrigger = true;
+        // Multi-key: the full selected list, in picker order, no limit.
+        // Single-key actions keep using Value; Keys is the source of
+        // truth whenever it is non-empty.
+        private List<int> keys = new List<int>();
+        // Sequence: press the keys one after another instead of all
+        // at once. Only meaningful for toggle actions with more than
+        // one key; held actions always press all at once.
+        private bool sequence;
         public bool IsToggle => (keyType & DS4KeyType.Toggle) != 0;
         public event EventHandler IsToggleChanged;
 
@@ -65,6 +73,33 @@ namespace DS4WinWPF.DS4Forms.ViewModels.SpecialActions
         public int Value { get => value; set => this.value = value; }
         public int PressReleaseIndex { get => pressReleaseIndex; set => pressReleaseIndex = value; }
         public bool NormalTrigger { get => normalTrigger; set => normalTrigger = value; }
+        public bool Sequence { get => sequence; set => sequence = value; }
+        public bool IsMultiKey => GetKeys().Count > 1;
+
+        public List<int> GetKeys()
+        {
+            if (keys != null && keys.Count > 0)
+                return new List<int>(keys);
+            if (value != 0)
+                return new List<int> { value };
+            return new List<int>();
+        }
+
+        public void SetKeys(List<int> newKeys)
+        {
+            keys = new List<int>();
+            if (newKeys != null)
+            {
+                foreach (int k in newKeys)
+                {
+                    if (k != 0 && !keys.Contains(k))
+                        keys.Add(k);
+                }
+            }
+            value = keys.Count > 0 ? keys[0] : 0;
+            UpdateDescribeText();
+        }
+
         public bool UnloadError
         {
             get => errors.TryGetValue("UnloadError", out _);
@@ -73,7 +108,30 @@ namespace DS4WinWPF.DS4Forms.ViewModels.SpecialActions
         public void LoadAction(SpecialAction action)
         {
             keyType = action.keyType;
-            int.TryParse(action.details, out value);
+            keys = new List<int>();
+            sequence = false;
+            value = 0;
+            string d = action.details ?? string.Empty;
+            // Sequence suffix, written by SaveAction as ";Sequence".
+            if (d.Contains(";"))
+            {
+                string[] parts = d.Split(';');
+                d = parts[0];
+                if (parts.Length > 1 && parts[1].Trim().StartsWith("Sequence", StringComparison.Ordinal))
+                    sequence = true;
+            }
+            if (!string.IsNullOrEmpty(d))
+            {
+                foreach (string token in d.Split(','))
+                {
+                    if (int.TryParse(token.Trim(), out int k) && k != 0 && !keys.Contains(k))
+                        keys.Add(k);
+                }
+            }
+            if (keys.Count > 0)
+                value = keys[0];
+            else
+                int.TryParse(d, out value);
 
             if (action.pressRelease)
             {
@@ -86,9 +144,26 @@ namespace DS4WinWPF.DS4Forms.ViewModels.SpecialActions
 
         public void UpdateDescribeText()
         {
-            describeText = KeyInterop.KeyFromVirtualKey(value).ToString() +
-                (keyType.HasFlag(DS4KeyType.ScanCode) ? " (SC)" : "") +
-                (keyType.HasFlag(DS4KeyType.Toggle) ? " (Toggle)" : "");
+            List<int> ks = GetKeys();
+            if (ks.Count == 0)
+            {
+                describeText = string.Empty;
+            }
+            else if (ks.Count == 1)
+            {
+                value = ks[0];
+                describeText = KeyInterop.KeyFromVirtualKey(value).ToString() +
+                    (keyType.HasFlag(DS4KeyType.ScanCode) ? " (SC)" : "") +
+                    (keyType.HasFlag(DS4KeyType.Toggle) ? " (Toggle)" : "");
+            }
+            else
+            {
+                value = ks[0];
+                describeText = string.Join(" + ", ks.Select(k => KeyInterop.KeyFromVirtualKey(k).ToString())) +
+                    (keyType.HasFlag(DS4KeyType.ScanCode) ? " (SC)" : "") +
+                    (keyType.HasFlag(DS4KeyType.Toggle) ? " (Toggle)" : "") +
+                    (sequence ? " (Sequence)" : "");
+            }
 
             DescribeTextChanged?.Invoke(this, EventArgs.Empty);
         }
@@ -110,7 +185,15 @@ namespace DS4WinWPF.DS4Forms.ViewModels.SpecialActions
 
         public void ReadSettings(DS4ControlSettings settings)
         {
-            value = (int)settings.action.actionKey;
+            // Single-key path only. The multi-key picker path sets Keys
+            // directly via SetKeys after the dialog closes, and must not
+            // be overwritten here with just the first key.
+            if (keys == null || keys.Count <= 1)
+            {
+                value = (int)settings.action.actionKey;
+                if (value != 0)
+                    keys = new List<int> { value };
+            }
             keyType = settings.keyType;
         }
 
@@ -126,8 +209,23 @@ namespace DS4WinWPF.DS4Forms.ViewModels.SpecialActions
                 }
             }
 
+            List<int> ks = GetKeys();
+            string detailsStr;
+            if (ks.Count <= 1)
+            {
+                detailsStr = $"{value}{(keyType.HasFlag(DS4KeyType.ScanCode) ? " Scan Code" : "")}";
+            }
+            else
+            {
+                detailsStr = string.Join(",", ks);
+                if (sequence)
+                    detailsStr += ";Sequence";
+                if (keyType.HasFlag(DS4KeyType.ScanCode))
+                    detailsStr += " Scan Code";
+            }
+
             Global.SaveAction(action.name, action.controls, 4,
-                $"{value}{(keyType.HasFlag(DS4KeyType.ScanCode) ? " Scan Code" : "")}", edit,
+                detailsStr, edit,
                 extras: !string.IsNullOrEmpty(uaction) ? $"{uaction}\n{action.ucontrols}" : "");
         }
 
@@ -139,14 +237,16 @@ namespace DS4WinWPF.DS4Forms.ViewModels.SpecialActions
             List<string> valueErrors = new List<string>();
             List<string> toggleErrors = new List<string>();
 
-            if (value == 0)
+            if (GetKeys().Count == 0)
             {
+                valid = false;
                 valueErrors.Add("No key defined");
                 errors["Value"] = valueErrors;
                 RaiseErrorsChanged("Value");
             }
             if (keyType.HasFlag(DS4KeyType.Toggle) && string.IsNullOrEmpty(action.ucontrols))
             {
+                valid = false;
                 toggleErrors.Add("No unload triggers specified");
                 errors["UnloadError"] = toggleErrors;
                 RaiseErrorsChanged("UnloadError");

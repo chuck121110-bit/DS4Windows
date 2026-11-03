@@ -10268,6 +10268,15 @@ namespace DS4Windows
                 case 9:
                     tempAction = new SpecialAction(name, controls, "GyroCalibration", details, delayTime);
                     break;
+                case 10:
+                    tempAction = new SpecialAction(name, controls, "System", details, extras: extras);
+                    break;
+                case 11:
+                    tempAction = new SpecialAction(name, controls, "SwitchPrograms", details);
+                    break;
+                case 12:
+                    tempAction = new SpecialAction(name, controls, "OnScreenKeyboard", details);
+                    break;
                 default:
                     break;
             }
@@ -12102,7 +12111,7 @@ namespace DS4Windows
 
     public class SpecialAction
     {
-        public enum ActionTypeId { None, Key, Program, Profile, Macro, DisconnectBT, BatteryCheck, MultiAction, XboxGameDVR, SASteeringWheelEmulationCalibrate, GyroCalibrate }
+        public enum ActionTypeId { None, Key, Program, Profile, Macro, DisconnectBT, BatteryCheck, MultiAction, XboxGameDVR, SASteeringWheelEmulationCalibrate, GyroCalibrate, SystemAction, SwitchPrograms, OnScreenKeyboard }
 
         public string name;
         public List<DS4Controls> trigger = new List<DS4Controls>();
@@ -12264,6 +12273,21 @@ namespace DS4Windows
             else if (type == "GyroCalibration")
             {
                 typeID = ActionTypeId.GyroCalibrate;
+            }
+            else if (type == "System")
+            {
+                typeID = ActionTypeId.SystemAction;
+                this.details = details;
+            }
+            else if (type == "SwitchPrograms")
+            {
+                typeID = ActionTypeId.SwitchPrograms;
+                this.details = details;
+            }
+            else if (type == "OnScreenKeyboard")
+            {
+                typeID = ActionTypeId.OnScreenKeyboard;
+                this.details = details;
             }
             else
                 this.details = details;

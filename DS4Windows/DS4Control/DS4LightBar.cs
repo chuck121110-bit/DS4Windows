@@ -1,4 +1,4 @@
-﻿/*
+/*
 DS4Windows
 Copyright (C) 2023  Travis Nickles
 
@@ -70,7 +70,6 @@ namespace DS4Windows
         public static DS4Color[] ConnectHoldColor = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
         private static DateTime[] lastLightBarTick = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
         private static DS4Device[] lastLightBarDevice = new DS4Device[Global.MAX_DS4_CONTROLLER_COUNT];
-        private static bool[] connectFadeRequested = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
         // 2026-11-01 fade: color changes fade in/out over 600 ms instead
         // of snapping, including blue firmware to profile on connect.
         private static DS4Color[] fadeFromColor = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
@@ -106,21 +105,6 @@ namespace DS4Windows
                 (batteryFadeOutGraceUntil[deviceNum] != DateTime.MinValue &&
                  DateTime.UtcNow < batteryFadeOutGraceUntil[deviceNum]);
         }
-        // 2026-11-03 connect snap fix: DualSenseDevice calls this
-        // when a connect-hold physical send was deferred (BT audio
-        // pacer helper restarting at connect) and then succeeds.
-        // The software 600 ms fade had already expired by then, so
-        // without a replay the controller only ever receives the
-        // final color, i.e. a snap. This flag makes the next
-        // updateLightBar tick start a fresh fade from black, with
-        // a fresh ConnectHold, exactly like a fresh connect.
-        // Battery check logic is untouched; this is connect only.
-        public static void RequestConnectFade(int deviceNum)
-        {
-            if (deviceNum < 0 || deviceNum >= Global.MAX_DS4_CONTROLLER_COUNT)
-                return;
-            connectFadeRequested[deviceNum] = true;
-        }
         private static DateTime[] batteryFadeOutStart = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
         private static DS4Color[] batteryFadeOutFrom = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
         private static DS4Color[] batteryFadeOutTo = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
@@ -134,23 +118,16 @@ namespace DS4Windows
         public static void updateLightBar(DS4Device device, int deviceNum)
         {
             DateTime tickNow = DateTime.UtcNow;
-            // 2026-11-03 connect snap fix: a time gap alone is not
-            // a reliable fresh-connect signal. A quick off/on
-            // can reconnect in under 5 seconds, and the target
-            // then equals the last sent color, so the generic
-            // fade never triggers and the first output is the
-            // full color, a snap. A new device object for the
-            // slot is a real connect (a profile switch never
-            // changes the device object), and a replay request
-            // from DualSenseDevice means transport deferred
-            // the original fade. Either counts as fresh here.
+            // Fresh connect: first tick, a tick gap over 5 seconds,
+            // or a new device object for the slot. A profile switch
+            // never changes the device object and ticks keep coming,
+            // so it is never a fresh connect here, and its fade is
+            // untouched.
             bool deviceChanged = !ReferenceEquals(lastLightBarDevice[deviceNum], device);
             lastLightBarDevice[deviceNum] = device;
-            bool connectFadeDue = connectFadeRequested[deviceNum];
-            connectFadeRequested[deviceNum] = false;
             bool isFreshConnect = lastLightBarTick[deviceNum] == DateTime.MinValue ||
                 (tickNow - lastLightBarTick[deviceNum]) > TimeSpan.FromSeconds(5) ||
-                deviceChanged || connectFadeDue;
+                deviceChanged;
             lastLightBarTick[deviceNum] = tickNow;
             DS4Color color = new DS4Color();
             bool useForceLight = forcelight[deviceNum];
@@ -417,32 +394,37 @@ namespace DS4Windows
                     color = openRGBColor;
                 }
 
-                // Connect hold override: fresh connect, pure custom or
-                // profile main color, overriding battery/flash/charging/
-                // rainbow intermediates, including any yellow step.
-                if (isFreshConnect && !defaultLight && useLightRoutine)
+                // Connect uses the SAME path as a battery check, no
+                // separate connect fade. On a fresh connect, set a
+                // battery hold to the pure custom/profile color for
+                // 1 second, exactly like Mapping does for a battery
+                // check, so the hold below, its direct BT send, its
+                // generic fade, and its fade-out/grace machinery all
+                // run for connect too. A real battery hold already
+                // in progress is left alone. Resetting the last sent
+                // color to black here makes the generic color-change
+                // fade below (the same code a battery check uses)
+                // interpolate black to the profile/custom color,
+                // instead of skipping because the target equals a
+                // stale last sent color. No DS4 blue is forced;
+                // firmware blue fades out on its own first. A
+                // profile switch is never a fresh connect, so its
+                // perfect fade is untouched.
+                if (isFreshConnect && !defaultLight && useLightRoutine &&
+                    (BatteryHoldUntil[deviceNum] == DateTime.MinValue ||
+                     DateTime.UtcNow >= BatteryHoldUntil[deviceNum]))
                 {
-                    ConnectHoldUntil[deviceNum] = tickNow.AddSeconds(1); // final: 1 second, not 3
-                    ConnectHoldColor[deviceNum] = lightModeInfo.useCustomLed
+                    DS4Color connectTarget = lightModeInfo.useCustomLed
                         ? lightModeInfo.m_CustomLed : getMainColor(deviceNum);
-                }
-                if (ConnectHoldUntil[deviceNum] != DateTime.MinValue)
-                {
-                    if (DateTime.UtcNow < ConnectHoldUntil[deviceNum])
-                    {
-                        color = ConnectHoldColor[deviceNum];
-                        useLightRoutine = true;
-                        useForceLight = false;
-                        forcedFlash[deviceNum] = 0;
-                        if (device is DS4Windows.InputDevices.DualSenseDevice dsDevice2)
-                        {
-                            dsDevice2.ForceBatteryLightbarOwnership();
-                        }
-                    }
-                    else
-                    {
-                        ConnectHoldUntil[deviceNum] = DateTime.MinValue;
-                    }
+                    BatteryHoldColor[deviceNum] = connectTarget;
+                    BatteryHoldUntil[deviceNum] = tickNow.AddSeconds(1);
+                    forcedColor[deviceNum] = connectTarget;
+                    forcelight[deviceNum] = true;
+                    batteryFadingOut[deviceNum] = false;
+                    batteryFadeOutGraceUntil[deviceNum] = DateTime.MinValue;
+                    fading[deviceNum] = false;
+                    lastSentColor[deviceNum] = new DS4Color(0, 0, 0);
+                    lastSentValid[deviceNum] = true;
                 }
 
                 // Battery hold override, after all other color logic.
@@ -569,38 +551,12 @@ namespace DS4Windows
                     (DistanceProfiles[deviceNum] || tempprofileDistance[deviceNum]);
                 if (!skipFade)
                 {
-                    if (isFreshConnect)
-                    {
-                        // 2026-11-03 connect fade fix, connect logic only:
-                        // lastSentValid and fading are static and survive a
-                        // controller disconnect in the same DS4 process, and
-                        // the disconnect tick leaves a fade toward black
-                        // behind. The old gate (isFreshConnect &&
-                        // !lastSentValid) therefore skipped the connect fade
-                        // on every reconnect after the first DS4 start, and
-                        // the first connect tick could instead complete the
-                        // stale disconnect fade to black. A profile switch,
-                        // by contrast, changes color, so it still triggered
-                        // the generic fade, imperfectly, from the stale
-                        // last-sent color. Force a fresh fade on every fresh
-                        // connect, from black to the connect-hold color.
-                        // Final 2026-11-01: do NOT set DS4 blue on connect.
-                        // Firmware blue fades out on its own, DS4 fades
-                        // in from black only, then to profile/custom.
-                        // Clear only stale battery fade-out transport state
-                        // left from the previous session; battery check
-                        // trigger, hold, fade-in, and fade-out code itself
-                        // is untouched, and ConnectHold still makes this a
-                        // direct-sent hold for transport.
-                        batteryFadeOutGraceUntil[deviceNum] = DateTime.MinValue;
-                        fadeFromColor[deviceNum] = new DS4Color(0, 0, 0);
-                        fadeToColor[deviceNum] = color;
-                        fadeStart[deviceNum] = tickNow;
-                        fading[deviceNum] = true;
-                        lastSentColor[deviceNum] = fadeFromColor[deviceNum];
-                        lastSentValid[deviceNum] = true;
-                    }
-                    else if (lastSentValid[deviceNum] && (color.red != lastSentColor[deviceNum].red || color.green != lastSentColor[deviceNum].green || color.blue != lastSentColor[deviceNum].blue))
+                    // Generic color-change fade, the same code a battery
+                    // check uses. On a fresh connect the last sent color
+                    // was reset to black above, so this interpolates
+                    // black to the profile/custom color. No special
+                    // connect fade branch exists anymore.
+                    if (lastSentValid[deviceNum] && (color.red != lastSentColor[deviceNum].red || color.green != lastSentColor[deviceNum].green || color.blue != lastSentColor[deviceNum].blue))
                     {
                         if (!fading[deviceNum] || fadeToColor[deviceNum].red != color.red || fadeToColor[deviceNum].green != color.green || fadeToColor[deviceNum].blue != color.blue)
                         {

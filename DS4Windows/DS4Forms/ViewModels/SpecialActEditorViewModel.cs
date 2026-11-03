@@ -1,4 +1,4 @@
-﻿/*
+/*
 DS4Windows
 Copyright (C) 2023  Travis Nickles
 
@@ -40,7 +40,9 @@ namespace DS4WinWPF.DS4Forms.ViewModels
             SpecialAction.ActionTypeId.Program, SpecialAction.ActionTypeId.Profile,
             SpecialAction.ActionTypeId.Key, SpecialAction.ActionTypeId.DisconnectBT,
             SpecialAction.ActionTypeId.BatteryCheck, SpecialAction.ActionTypeId.MultiAction,
-            SpecialAction.ActionTypeId.SASteeringWheelEmulationCalibrate, SpecialAction.ActionTypeId.GyroCalibrate
+            SpecialAction.ActionTypeId.SASteeringWheelEmulationCalibrate, SpecialAction.ActionTypeId.GyroCalibrate,
+            SpecialAction.ActionTypeId.SystemAction, SpecialAction.ActionTypeId.SwitchPrograms,
+            SpecialAction.ActionTypeId.OnScreenKeyboard
         };
 
         private List<string> controlTriggerList = new List<string>();

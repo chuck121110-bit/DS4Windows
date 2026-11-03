@@ -6976,6 +6976,15 @@ namespace DS4Windows
 
         protected void CheckForTouchToggle(int deviceID, DS4State cState, DS4State pState)
         {
+            // On-screen keyboard, touchpad cursor mode: the user must
+            // not be able to turn mouse movement back on while the
+            // keyboard is open. Skip the toggle entirely (silently,
+            // no toast), so the pre-keyboard state is restored on
+            // close. Mouse.cs suppression above is the other half:
+            // even if movement were on, it stays off while open.
+            if (DS4Windows.OnScreenKeyboardState.IsActive(deviceID) &&
+                DS4Windows.OnScreenKeyboardState.UseTouchpadCursor(deviceID))
+                return;
             if (!IsUsingTouchpadForControls(deviceID) && cState.Touch1 && pState.PS)
             {
                 if (GetTouchActive(deviceID) && touchreleased[deviceID])

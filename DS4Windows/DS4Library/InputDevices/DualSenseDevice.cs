@@ -6958,40 +6958,7 @@ namespace DS4Windows.InputDevices
                     // permanent loss.
                     RequestBluetoothOutputRecoveryUnlessNativeAdmissionBusy();
                     SchedulePhysicalOutputRetry();
-                    // Connect snap: remember a deferred connect-hold
-                    // send so the fade can be replayed once
-                    // transport succeeds. Battery holds excluded.
-                    if (conType == ConnectionType.BT && IsDs4WinLightbarMode())
-                    {
-                        int deferredSlot = DeviceSlotNumber;
-                        if (deferredSlot >= 0 && deferredSlot < DS4LightBar.ConnectHoldUntil.Length &&
-                            DS4LightBar.ConnectHoldUntil[deferredSlot] != DateTime.MinValue &&
-                            DateTime.UtcNow < DS4LightBar.ConnectHoldUntil[deferredSlot] &&
-                            (DS4LightBar.BatteryHoldUntil[deferredSlot] == DateTime.MinValue ||
-                             DateTime.UtcNow >= DS4LightBar.BatteryHoldUntil[deferredSlot]))
-                        {
-                            connectFadeDeferred = true;
-                        }
-                    }
                     return;
-                }
-                // Connect snap replay: transport has now succeeded
-                // after deferring a connect-hold send. The original
-                // software fade has expired, so request a fresh
-                // connect fade; the next DS4LightBar tick will
-                // fade from black to the profile/custom color
-                // with a fresh ConnectHold, while transport is ready.
-                if (conType == ConnectionType.BT && connectFadeDeferred && connectFadeReplayCount < 3)
-                {
-                    int replaySlot = DeviceSlotNumber;
-                    connectFadeDeferred = false;
-                    if (replaySlot >= 0 && replaySlot < DS4LightBar.BatteryHoldUntil.Length && IsDs4WinLightbarMode() &&
-                        (DS4LightBar.BatteryHoldUntil[replaySlot] == DateTime.MinValue ||
-                         DateTime.UtcNow >= DS4LightBar.BatteryHoldUntil[replaySlot]))
-                    {
-                        connectFadeReplayCount++;
-                        DS4LightBar.RequestConnectFade(replaySlot);
-                    }
                 }
 
                 pendingProfileMuteReleaseStrobes =
@@ -7488,8 +7455,6 @@ namespace DS4Windows.InputDevices
         // cannot replay fades forever. Battery holds never set
         // this flag, and profile switches never create a new
         // device instance, so neither path is touched.
-        private bool connectFadeDeferred;
-        private int connectFadeReplayCount;
         internal static bool AnyLightbarHoldActive()
         {
             DateTime now = DateTime.UtcNow;

@@ -1,4 +1,4 @@
-﻿/*
+/*
 DS4Windows
 Copyright (C) 2023  Travis Nickles
 
@@ -54,6 +54,18 @@ namespace DS4WinWPF.DS4Forms
         private BindingWindowViewModel bindingVM;
         private Button highlightBtn;
         private ExposeMode expose;
+        // Multi-select key picker (Press / Toggle Key and System Action
+        // custom macros). No limit on how many keys can be selected.
+        // Off by default, so every other BindingWindow caller keeps
+        // the old single-key, close-on-first-click behavior.
+        private bool multiSelectMode;
+        private List<ushort> multiSelectedKeys = new List<ushort>();
+        private Dictionary<Button, System.Windows.Media.Brush> multiOriginalBackgrounds =
+            new Dictionary<Button, System.Windows.Media.Brush>();
+        private Button multiDoneBtn;
+        public bool MultiSelectMode => multiSelectMode;
+        public bool MultiSelectConfirmed { get; private set; }
+        public List<ushort> MultiSelectedKeys => new List<ushort>(multiSelectedKeys);
         private OutContType configuredOutputType = OutContType.ViiperX360;
         private bool hasLiveInputContext;
         private bool liveInputPreviewRequested;
@@ -68,11 +80,12 @@ namespace DS4WinWPF.DS4Forms
         }
 
         public BindingWindow(int deviceNum, DS4Windows.DS4ControlSettings settings,
-            ExposeMode expose = ExposeMode.Full)
+            ExposeMode expose = ExposeMode.Full, bool multiSelect = false)
         {
             InitializeComponent();
 
             this.expose = expose;
+            this.multiSelectMode = multiSelect;
             bindingVM = new BindingWindowViewModel(deviceNum, settings);
 
             if (settings.control != DS4Windows.DS4Controls.None)
@@ -94,6 +107,11 @@ namespace DS4WinWPF.DS4Forms
             }
 
             InitKeyBindings();
+            if (multiSelectMode)
+            {
+                SetupMultiSelectDoneButton();
+                UpdateMultiSelectTitle();
+            }
             InitInfoMaps();
 
             ConfigureOutputControllerCanvas(bindingVM.OutputControllerType);
@@ -325,9 +343,124 @@ namespace DS4WinWPF.DS4Forms
             highlightLb.Visibility = Visibility.Hidden;
         }
 
+        private void SetupMultiSelectDoneButton()
+        {
+            multiDoneBtn = new Button
+            {
+                Content = "Done / Submit",
+                Height = 32,
+                Margin = new Thickness(8, 4, 8, 4),
+                HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch,
+            };
+            multiDoneBtn.Click += MultiSelectDoneBtn_Click;
+            // fullPanel is a DockPanel; a Bottom-docked button stays
+            // visible in Keyboard mode, where bottomPanel is collapsed.
+            System.Windows.Controls.DockPanel.SetDock(multiDoneBtn,
+                System.Windows.Controls.Dock.Bottom);
+            fullPanel.Children.Add(multiDoneBtn);
+            if (Height < 340)
+                Height = 340;
+        }
+
+        public void SetInitialMultiKeys(IEnumerable<ushort> initialKeys)
+        {
+            multiSelectedKeys = new List<ushort>();
+            if (initialKeys == null)
+                return;
+            foreach (ushort k in initialKeys)
+            {
+                if (k != 0 && !multiSelectedKeys.Contains(k))
+                    multiSelectedKeys.Add(k);
+            }
+            // Highlight the matching key buttons, if they exist.
+            foreach (var pair in associatedBindings)
+            {
+                if (pair.Value != null && multiSelectedKeys.Contains((ushort)pair.Value.outkey))
+                    SetMultiSelectHighlight(pair.Key, true);
+            }
+            UpdateMultiSelectTitle();
+        }
+
+        private void SetMultiSelectHighlight(Button button, bool selected)
+        {
+            if (button == null)
+                return;
+            if (selected)
+            {
+                if (!multiOriginalBackgrounds.ContainsKey(button))
+                    multiOriginalBackgrounds[button] = button.Background;
+                button.Background = System.Windows.SystemColors.HighlightBrush;
+            }
+            else if (multiOriginalBackgrounds.TryGetValue(button, out var original))
+            {
+                button.Background = original;
+            }
+        }
+
+        private void UpdateMultiSelectTitle()
+        {
+            if (!multiSelectMode)
+                return;
+            if (multiSelectedKeys.Count == 0)
+            {
+                Title = "Select keys: hold Ctrl and click multiple, then Done / Submit";
+            }
+            else
+            {
+                string names = string.Join(" + ", multiSelectedKeys.Select(
+                    k => System.Windows.Input.KeyInterop.KeyFromVirtualKey(k).ToString()));
+                Title = $"Selected ({multiSelectedKeys.Count}): {names} - click Done / Submit to save";
+            }
+        }
+
+        private void MultiSelectDoneBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (multiSelectedKeys.Count == 0)
+            {
+                // Done with nothing selected saves nothing; leave the
+                // previous binding untouched instead of clearing it.
+                MultiSelectConfirmed = false;
+                Close();
+                return;
+            }
+            MultiSelectConfirmed = true;
+            // WriteBinds on close writes the first selected key as the
+            // single-key value; the caller reads the full list from
+            // MultiSelectedKeys and overrides it.
+            OutBinding binding = bindingVM.ActionBinding;
+            binding.outputType = OutBinding.OutType.Key;
+            binding.outkey = multiSelectedKeys[0];
+            Close();
+        }
+
         private void OutputKeyBtn_Click(object sender, RoutedEventArgs e)
         {
             Button button = sender as Button;
+            if (multiSelectMode)
+            {
+                // Ctrl+click accumulates; a plain click also toggles,
+                // so a single click without Ctrl still selects a key.
+                // Nothing closes here: only Done / Submit saves.
+                if (button != null && associatedBindings.TryGetValue(button, out BindAssociation multiBind))
+                {
+                    ushort key = (ushort)multiBind.outkey;
+                    if (key != 0)
+                    {
+                        if (multiSelectedKeys.Contains(key))
+                        {
+                            multiSelectedKeys.Remove(key);
+                            SetMultiSelectHighlight(button, false);
+                        }
+                        else
+                        {
+                            multiSelectedKeys.Add(key);
+                            SetMultiSelectHighlight(button, true);
+                        }
+                        UpdateMultiSelectTitle();
+                    }
+                }
+                return;
+            }
             OutBinding binding = bindingVM.ActionBinding;
             binding.outputType = OutBinding.OutType.Key;
             if (associatedBindings.TryGetValue(button, out BindAssociation bind))

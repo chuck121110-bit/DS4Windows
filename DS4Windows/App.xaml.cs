@@ -511,6 +511,9 @@ namespace DS4WinWPF
             StartupDiag(logger, "MainWindow.Show begin");
             window.Show();
             StartupDiag(logger, "MainWindow.Show end");
+            // On-screen keyboard window host: opens / closes the
+            // keyboard window when the controller opens / closes it.
+            DS4WinWPF.DS4Forms.OnScreenKeyboardWindowHost.Initialize();
             window.IsInitialShow = false;
 
             // Set up hooks for IPC command calls

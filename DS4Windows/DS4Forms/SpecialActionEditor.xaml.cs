@@ -1,4 +1,4 @@
-﻿/*
+/*
 DS4Windows
 Copyright (C) 2023  Travis Nickles
 
@@ -21,6 +21,7 @@ using DS4WinWPF.DS4Forms.ViewModels.SpecialActions;
 using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -45,6 +46,9 @@ namespace DS4WinWPF.DS4Forms
         private MultiActButtonViewModel multiActButtonVM;
         private SpecialActionViewModel saSteeringWheelVM;
         private SpecialActionViewModel calibrateGyroVM;
+        private SystemActionViewModel systemActVM;
+        private SwitchProgramsViewModel switchProgVM;
+        private OnScreenKeyboardViewModel oskVM;
 
         public event EventHandler Cancel;
         public delegate void SaveHandler(object sender, string actionName);
@@ -68,6 +72,9 @@ namespace DS4WinWPF.DS4Forms
             multiActButtonVM = new MultiActButtonViewModel();
             saSteeringWheelVM = new SpecialActionViewModel(8);
             calibrateGyroVM = new SpecialActionViewModel(9);
+            systemActVM = new SystemActionViewModel();
+            switchProgVM = new SwitchProgramsViewModel();
+            oskVM = new OnScreenKeyboardViewModel();
 
             // Hide tab headers. Tab content will still be visible
             blankActTab.Visibility = Visibility.Collapsed;
@@ -80,6 +87,9 @@ namespace DS4WinWPF.DS4Forms
             multiActTab.Visibility = Visibility.Collapsed;
             sixaxisWheelCalibrateTab.Visibility = Visibility.Collapsed;
             gyroCalibrateTab.Visibility = Visibility.Collapsed;
+            systemActTab.Visibility = Visibility.Collapsed;
+            switchProgTab.Visibility = Visibility.Collapsed;
+            oskActTab.Visibility = Visibility.Collapsed;
 
             if (specialAction != null)
             {
@@ -100,6 +110,9 @@ namespace DS4WinWPF.DS4Forms
             multiActTab.DataContext = multiActButtonVM;
             sixaxisWheelCalibrateTab.DataContext = saSteeringWheelVM;
             gyroCalibrateTab.DataContext = calibrateGyroVM;
+            systemActTab.DataContext = systemActVM;
+            switchProgTab.DataContext = switchProgVM;
+            oskActTab.DataContext = oskVM;
 
             SetupLateEvents();
         }
@@ -217,6 +230,9 @@ namespace DS4WinWPF.DS4Forms
             multiActTab.DataContext = null;
             sixaxisWheelCalibrateTab.DataContext = null;
             gyroCalibrateTab.DataContext = null;
+            systemActTab.DataContext = null;
+            switchProgTab.DataContext = null;
+            oskActTab.DataContext = null;
         }
 
         private void LoadAction(DS4Windows.SpecialAction specialAction)
@@ -255,6 +271,15 @@ namespace DS4WinWPF.DS4Forms
                     break;
                 case DS4Windows.SpecialAction.ActionTypeId.GyroCalibrate:
                     calibrateGyroVM.LoadAction(specialAction);
+                    break;
+                case DS4Windows.SpecialAction.ActionTypeId.SystemAction:
+                    systemActVM.LoadAction(specialAction);
+                    break;
+                case DS4Windows.SpecialAction.ActionTypeId.SwitchPrograms:
+                    switchProgVM.LoadAction(specialAction);
+                    break;
+                case DS4Windows.SpecialAction.ActionTypeId.OnScreenKeyboard:
+                    oskVM.LoadAction(specialAction);
                     break;
             }
         }
@@ -335,6 +360,15 @@ namespace DS4WinWPF.DS4Forms
                     case DS4Windows.SpecialAction.ActionTypeId.GyroCalibrate:
                         calibrateGyroVM.SaveAction(tempAct, editMode);
                         break;
+                    case DS4Windows.SpecialAction.ActionTypeId.SystemAction:
+                        systemActVM.SaveAction(tempAct, editMode);
+                        break;
+                    case DS4Windows.SpecialAction.ActionTypeId.SwitchPrograms:
+                        switchProgVM.SaveAction(tempAct, editMode);
+                        break;
+                    case DS4Windows.SpecialAction.ActionTypeId.OnScreenKeyboard:
+                        oskVM.SaveAction(tempAct, editMode);
+                        break;
                 }
 
                 Saved?.Invoke(this, tempAct.name);
@@ -373,6 +407,15 @@ namespace DS4WinWPF.DS4Forms
                     break;
                 case DS4Windows.SpecialAction.ActionTypeId.GyroCalibrate:
                     valid = calibrateGyroVM.IsValid(action);
+                    break;
+                case DS4Windows.SpecialAction.ActionTypeId.SystemAction:
+                    valid = systemActVM.IsValid(action);
+                    break;
+                case DS4Windows.SpecialAction.ActionTypeId.SwitchPrograms:
+                    valid = switchProgVM.IsValid(action);
+                    break;
+                case DS4Windows.SpecialAction.ActionTypeId.OnScreenKeyboard:
+                    valid = oskVM.IsValid(action);
                     break;
             }
 
@@ -549,14 +592,44 @@ namespace DS4WinWPF.DS4Forms
 
         private void PressKeySelectBtn_Click(object sender, RoutedEventArgs e)
         {
+            // The existing key picker, extended to multi-select: hold
+            // Ctrl and click multiple keys, then Done / Submit saves.
+            // No limit. One key still works exactly as before.
             DS4Windows.DS4ControlSettings settings = pressKeyVM.PrepareSettings();
             BindingWindow window = new BindingWindow(specialActVM.DeviceNum, settings,
-                BindingWindow.ExposeMode.Keyboard);
+                BindingWindow.ExposeMode.Keyboard, multiSelect: true);
+            window.SetInitialMultiKeys(pressKeyVM.GetKeys().Select(k => (ushort)k));
             window.Owner = App.Current.MainWindow;
             window.ShowDialog();
-            pressKeyVM.ReadSettings(settings);
+            if (window.MultiSelectConfirmed)
+            {
+                pressKeyVM.SetKeys(window.MultiSelectedKeys.Select(k => (int)k).ToList());
+                pressKeyVM.KeyType = settings.keyType;
+            }
+            else
+            {
+                pressKeyVM.ReadSettings(settings);
+            }
             pressKeyVM.UpdateDescribeText();
             pressKeyVM.UpdateToggleControls();
+        }
+
+        private void SystemActionSelectKeysBtn_Click(object sender, RoutedEventArgs e)
+        {
+            // Custom system-action keys use the same existing picker,
+            // multi-select, picked by clicking, never by pressing
+            // keys physically.
+            DS4Windows.DS4ControlSettings settings = systemActVM.PrepareSettings();
+            BindingWindow window = new BindingWindow(specialActVM.DeviceNum, settings,
+                BindingWindow.ExposeMode.Keyboard, multiSelect: true);
+            window.SetInitialMultiKeys(systemActVM.CustomKeys.Select(k => (ushort)k));
+            window.Owner = App.Current.MainWindow;
+            window.ShowDialog();
+            if (window.MultiSelectConfirmed)
+            {
+                systemActVM.SetCustomKeys(window.MultiSelectedKeys.Select(k => (int)k).ToList());
+            }
+            systemActVM.UpdateDescribeText();
         }
     }
 }

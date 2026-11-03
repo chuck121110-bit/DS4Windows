@@ -1470,6 +1470,20 @@ namespace DS4Windows
         }
         public virtual void touchesMoved(DS4Touchpad sender, TouchpadEventArgs arg)
         {
+            // On-screen keyboard, touchpad cursor mode: the touchpad
+            // moves the keyboard highlight, never the Windows cursor,
+            // and this holds for the whole time the keyboard is open,
+            // even if the user tries to toggle mouse movement back on.
+            // The toggle itself is also skipped in ControlService, so
+            // the pre-keyboard mouse state is restored on close.
+            if (DS4Windows.OnScreenKeyboardState.IsActive(deviceNum) &&
+                DS4Windows.OnScreenKeyboardState.UseTouchpadCursor(deviceNum))
+            {
+                if (arg.Touches != null && arg.Touches.Length > 0)
+                    DS4Windows.OnScreenKeyboardState.MoveByTouch(deviceNum,
+                        arg.Touches[0].DeltaX, arg.Touches[0].DeltaY);
+                return;
+            }
             s = dev.getCurrentStateRef();
 
             //Trace.WriteLine("TOUCHES_MOVED");
@@ -1608,6 +1622,19 @@ namespace DS4Windows
 
         public virtual void touchesBegan(DS4Touchpad sender, TouchpadEventArgs arg)
         {
+            if (DS4Windows.OnScreenKeyboardState.IsActive(deviceNum) &&
+                DS4Windows.OnScreenKeyboardState.UseTouchpadCursor(deviceNum))
+            {
+                // Record the touch start for tap detection in
+                // touchesEnded, but emit no Windows mouse movement or
+                // click while the keyboard is open.
+                s = dev.getCurrentStateRef();
+                pastTime = arg.TimeStamp;
+                if (arg.Touches != null && arg.Touches.Length > 0)
+                    firstTouch.populate(arg.Touches[0].HwX, arg.Touches[0].HwY, arg.Touches[0].TouchID,
+                        arg.Touches[0].PreviousTouch);
+                return;
+            }
             TouchpadOutMode tempMode = Global.TouchOutMode[deviceNum];
             bool mouseMode = tempMode == TouchpadOutMode.Mouse;
             if (mouseMode)
@@ -1663,6 +1690,23 @@ namespace DS4Windows
         {
             //Trace.WriteLine("TOUCHES ENDED");
 
+            if (DS4Windows.OnScreenKeyboardState.IsActive(deviceNum) &&
+                DS4Windows.OnScreenKeyboardState.UseTouchpadCursor(deviceNum))
+            {
+                // A short, small tap selects the highlighted key; it
+                // never clicks in Windows while the keyboard is open.
+                s = dev.getCurrentStateRef();
+                byte tapSens = Global.getTapSensitivity(deviceNum);
+                if (tapSens != 0 && arg.Touches != null && arg.Touches.Length > 0 &&
+                    !arg.TouchButtonPressed &&
+                    arg.TimeStamp <= (pastTime + TimeSpan.FromMilliseconds((double)tapSens * 2)) &&
+                    Math.Abs(firstTouch.HwX - arg.Touches[0].HwX) < 10 &&
+                    Math.Abs(firstTouch.HwY - arg.Touches[0].HwY) < 10)
+                {
+                    DS4Windows.OnScreenKeyboardState.RequestTouchpadTap(deviceNum);
+                }
+                return;
+            }
             s = dev.getCurrentStateRef();
             wasTouched = true;
             profileSwipeTracking = false;
