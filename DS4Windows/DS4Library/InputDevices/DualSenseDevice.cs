@@ -6686,6 +6686,33 @@ namespace DS4Windows.InputDevices
                             BluetoothCombinedStateOffset);
                     }
                 }
+                // 2026-11-02 battery LED in game: battery hold wins over
+                // game color and profile color in the BT combined report.
+                // Previously this block only computed batteryActiveBt and
+                // skipped the connect hold, it never wrote BatteryHoldColor.
+                {
+                    for (int bi = 0; bi < DS4LightBar.BatteryHoldUntil.Length; bi++)
+                    {
+                        if (DS4LightBar.BatteryHoldUntil[bi] != DateTime.MinValue &&
+                            DateTime.UtcNow < DS4LightBar.BatteryHoldUntil[bi])
+                        {
+                            var batterySnapshot = outputState with
+                            {
+                                ProfileLightbar = new DS4LightbarState
+                                {
+                                    LightBarColor = DS4LightBar.BatteryHoldColor[bi],
+                                    LightBarFlashDurationOn = 0,
+                                    LightBarFlashDurationOff = 0,
+                                    LightBarExplicitlyOff = true,
+                                },
+                            };
+                            MergeProfileLightbarIntoV5AudioSnapshot(batterySnapshot,
+                                latestBluetoothCombinedSpeakerReport,
+                                BluetoothCombinedStateOffset);
+                            break;
+                        }
+                    }
+                }
                 // Connect hold, after profile merge, battery still wins:
                 // if a connect hold is active and no battery hold is active,
                 // override this same packet with the connect color.
@@ -6843,7 +6870,33 @@ namespace DS4Windows.InputDevices
                         latestBluetoothCombinedSpeakerReport,
                         BluetoothCombinedStateOffset);
                 }
-                ApplyActiveRumblePreviewToV5AudioSnapshot(
+                                // 2026-11-02 battery LED in game: same BT cache bug as
+                // CacheBluetoothCombinedSpeakerReport, battery color must
+                // win over game and profile color here too.
+                {
+                    for (int bi = 0; bi < DS4LightBar.BatteryHoldUntil.Length; bi++)
+                    {
+                        if (DS4LightBar.BatteryHoldUntil[bi] != DateTime.MinValue &&
+                            DateTime.UtcNow < DS4LightBar.BatteryHoldUntil[bi])
+                        {
+                            var batterySnapshot = outputState with
+                            {
+                                ProfileLightbar = new DS4LightbarState
+                                {
+                                    LightBarColor = DS4LightBar.BatteryHoldColor[bi],
+                                    LightBarFlashDurationOn = 0,
+                                    LightBarFlashDurationOff = 0,
+                                    LightBarExplicitlyOff = true,
+                                },
+                            };
+                            MergeProfileLightbarIntoV5AudioSnapshot(batterySnapshot,
+                                latestBluetoothCombinedSpeakerReport,
+                                BluetoothCombinedStateOffset);
+                            break;
+                        }
+                    }
+                }
+ApplyActiveRumblePreviewToV5AudioSnapshot(
                     latestBluetoothCombinedSpeakerReport,
                     BluetoothCombinedStateOffset, outputState);
                 updated = true;
@@ -7120,7 +7173,34 @@ namespace DS4Windows.InputDevices
                             BluetoothCombinedStateOffset);
                     }
 
-                    // Native game ownership is state ownership, not a veto on
+                                        // 2026-11-02 battery LED in game: BT output reports
+                    // from the DS4LightBar tick also merge profile color
+                    // only, so battery color must win here too, or the
+                    // tick overwrites the battery color in the cache.
+                    {
+                        for (int bi = 0; bi < DS4LightBar.BatteryHoldUntil.Length; bi++)
+                        {
+                            if (DS4LightBar.BatteryHoldUntil[bi] != DateTime.MinValue &&
+                                DateTime.UtcNow < DS4LightBar.BatteryHoldUntil[bi])
+                            {
+                                var batterySnapshot = activePhysicalOutputState with
+                                {
+                                    ProfileLightbar = new DS4LightbarState
+                                    {
+                                        LightBarColor = DS4LightBar.BatteryHoldColor[bi],
+                                        LightBarFlashDurationOn = 0,
+                                        LightBarFlashDurationOff = 0,
+                                        LightBarExplicitlyOff = true,
+                                    },
+                                };
+                                MergeProfileLightbarIntoV5AudioSnapshot(batterySnapshot,
+                                    latestBluetoothCombinedSpeakerReport,
+                                    BluetoothCombinedStateOffset);
+                                break;
+                            }
+                        }
+                    }
+// Native game ownership is state ownership, not a veto on
                     // later local feedback. XInput/compact HID rumble and the
                     // profile editor arrive through DS4Device rather than as
                     // native USB output reports. Previously this early return
@@ -7384,11 +7464,14 @@ namespace DS4Windows.InputDevices
         // during the hold.
         internal void ForceBatteryLightbarOwnership()
         {
-            if (physicalOutputStateMailbox.
-                SetNativeGameLightbarOwnershipReleased(true))
-            {
-                QueuePhysicalOutputUpdate();
-            }
+            // 2026-11-02 battery LED in game: queue a physical output
+            // update every tick during the hold, not only on the first
+            // ownership change, so a game native report each frame
+            // cannot overwrite the battery color before the BT
+            // combined report goes out.
+            physicalOutputStateMailbox.
+                SetNativeGameLightbarOwnershipReleased(true);
+            QueuePhysicalOutputUpdate();
         }
 
         private static void MergeProfileLightbarIntoV5AudioSnapshot(
