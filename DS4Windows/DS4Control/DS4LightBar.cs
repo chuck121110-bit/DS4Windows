@@ -69,6 +69,8 @@ namespace DS4Windows
         public static DateTime[] ConnectHoldUntil = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
         public static DS4Color[] ConnectHoldColor = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
         private static DateTime[] lastLightBarTick = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static DS4Device[] lastLightBarDevice = new DS4Device[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static bool[] connectFadeRequested = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
         // 2026-11-01 fade: color changes fade in/out over 600 ms instead
         // of snapping, including blue firmware to profile on connect.
         private static DS4Color[] fadeFromColor = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
@@ -104,6 +106,21 @@ namespace DS4Windows
                 (batteryFadeOutGraceUntil[deviceNum] != DateTime.MinValue &&
                  DateTime.UtcNow < batteryFadeOutGraceUntil[deviceNum]);
         }
+        // 2026-11-03 connect snap fix: DualSenseDevice calls this
+        // when a connect-hold physical send was deferred (BT audio
+        // pacer helper restarting at connect) and then succeeds.
+        // The software 600 ms fade had already expired by then, so
+        // without a replay the controller only ever receives the
+        // final color, i.e. a snap. This flag makes the next
+        // updateLightBar tick start a fresh fade from black, with
+        // a fresh ConnectHold, exactly like a fresh connect.
+        // Battery check logic is untouched; this is connect only.
+        public static void RequestConnectFade(int deviceNum)
+        {
+            if (deviceNum < 0 || deviceNum >= Global.MAX_DS4_CONTROLLER_COUNT)
+                return;
+            connectFadeRequested[deviceNum] = true;
+        }
         private static DateTime[] batteryFadeOutStart = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
         private static DS4Color[] batteryFadeOutFrom = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
         private static DS4Color[] batteryFadeOutTo = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
@@ -117,8 +134,23 @@ namespace DS4Windows
         public static void updateLightBar(DS4Device device, int deviceNum)
         {
             DateTime tickNow = DateTime.UtcNow;
+            // 2026-11-03 connect snap fix: a time gap alone is not
+            // a reliable fresh-connect signal. A quick off/on
+            // can reconnect in under 5 seconds, and the target
+            // then equals the last sent color, so the generic
+            // fade never triggers and the first output is the
+            // full color, a snap. A new device object for the
+            // slot is a real connect (a profile switch never
+            // changes the device object), and a replay request
+            // from DualSenseDevice means transport deferred
+            // the original fade. Either counts as fresh here.
+            bool deviceChanged = !ReferenceEquals(lastLightBarDevice[deviceNum], device);
+            lastLightBarDevice[deviceNum] = device;
+            bool connectFadeDue = connectFadeRequested[deviceNum];
+            connectFadeRequested[deviceNum] = false;
             bool isFreshConnect = lastLightBarTick[deviceNum] == DateTime.MinValue ||
-                (tickNow - lastLightBarTick[deviceNum]) > TimeSpan.FromSeconds(5);
+                (tickNow - lastLightBarTick[deviceNum]) > TimeSpan.FromSeconds(5) ||
+                deviceChanged || connectFadeDue;
             lastLightBarTick[deviceNum] = tickNow;
             DS4Color color = new DS4Color();
             bool useForceLight = forcelight[deviceNum];

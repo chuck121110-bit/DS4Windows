@@ -250,6 +250,12 @@ namespace DS4Windows
 
         private static ViiperPrerequisiteStatus GetStatusCore(bool tryStartServer, bool refreshDependencies)
         {
+            // Full-exit audio persistence: register the task-owned
+            // VIIPER server before trying to start it, so a later full
+            // DS4 exit does not kill the server that hosts the main audio.
+            if (tryStartServer)
+                EnsureMainAudioPersistenceTask();
+
             string canonicalViiperPath = GetCanonicalViiperExePath();
             // Location is not identity. Portable users may keep the exact
             // bundled VIIPER executable anywhere; the preferred/running/task
@@ -1817,6 +1823,49 @@ namespace DS4Windows
             {
                 failureMessage = "RunVIIPER could not be verified: " +
                     ex.Message;
+                return false;
+            }
+        }
+
+        // 2026-11-03 full-exit audio persistence, Chuck's request:
+        // DS4 Stop retains the main audio sidecar, but a full DS4 exit
+        // kills the VIIPER server because it was started as a DS4 child
+        // (parent is the DS4 pacer helper, not Task Scheduler), so the
+        // virtual USB audio device disappears. RunVIIPER is the existing
+        // task-owned way to run VIIPER, but RefreshOnLaunch only registers
+        // it when DS4's own run-at-startup repair is allowed, so on this PC
+        // it was never registered and VIIPER was always child-started.
+        // This method registers RunVIIPER for the canonical custom VIIPER
+        // exe, independent of DS4 run-at-startup, best-effort only: it
+        // never throws and never fails a DS4 start if registration fails
+        // (for example, not running as administrator). It does NOT change
+        // DS4 run-at-startup, profiles, Sonar, LED, or audio routing.
+        // Consequence, stated plainly: VIIPER will then start at logon via
+        // RunVIIPER and keep running after DS4 fully exits, so the main
+        // audio device stays in Windows. To stop VIIPER completely, end
+        // viiper.exe and delete the RunVIIPER task, or tell Sage to remove
+        // this persistence, because the next DS4 start will re-register it.
+        public static bool EnsureMainAudioPersistenceTask()
+        {
+            try
+            {
+                string canonicalPath = GetCanonicalViiperExePath();
+                if (!IsSelectableViiperExecutable(canonicalPath))
+                    return false;
+                if (IsViiperStartupTaskValid(canonicalPath, out _))
+                    return true;
+                if (!Global.IsAdministrator())
+                    return false;
+                string currentUserSid = System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value;
+                if (string.IsNullOrWhiteSpace(currentUserSid))
+                    return false;
+                using TaskService service = new TaskService();
+                bool registered = ViiperStartupTaskPolicy.Register(canonicalPath, currentUserSid,
+                    canonicalPath, new ViiperStartupTaskStore(service), startupAllowsRepair: null);
+                return registered && IsViiperStartupTaskValid(canonicalPath, out _);
+            }
+            catch
+            {
                 return false;
             }
         }
