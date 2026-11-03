@@ -4289,12 +4289,21 @@ namespace DS4Windows
             }
         }
 
+        // 2026-11-03 DS4 stop audio persistence: do NOT destroy the
+        // main audio sidecar on DS4 stop. Retain it like keep-alive:
+        // ResetState to neutral, keep the VIIPER stream attached, so
+        // the device stays present in Windows while DS4 is stopped.
+        // Audio routing is reset by the passthrough resets in Stop,
+        // so it is silent until DS4 returns, but Windows/Sonar do
+        // not lose the device. Gamepad primaries are still removed
+        // separately in Stop, only the audio sidecar stays.
         private void StopAllPlayStationFeatureOutputs()
         {
             for (int index = 0; index <
                 playStationFeatureOutputDevices.Length; index++)
             {
-                DisconnectPlayStationFeatureOutput(index);
+                RetainPlayStationFeatureOutputForKeepAlive(index);
+                LogDebug($"Main audio: retained DualSense audio sidecar for controller #{index + 1} on DS4 stop, not destroyed, audio silent until DS4 returns", false);
             }
         }
 
