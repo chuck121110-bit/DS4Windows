@@ -6686,40 +6686,17 @@ namespace DS4Windows.InputDevices
                             BluetoothCombinedStateOffset);
                     }
                 }
-                // Connect hold, after profile merge, battery still wins:
-                // if a connect hold is active and no battery hold is active,
-                // override this same packet with the connect color.
+                // Lightbar hold, faded mailbox color only: DS4LightBar
+                // already resolved battery-over-connect priority and
+                // applied the fade into the mailbox, so merge that color
+                // regardless of native ownership. The previous raw
+                // connect color here snapped instead of fading.
+                if (AnyLightbarHoldActive())
                 {
-                    bool batteryActiveBt = false;
-                    for (int bi = 0; bi < DS4LightBar.BatteryHoldUntil.Length; bi++)
-                    {
-                        if (DS4LightBar.BatteryHoldUntil[bi] != DateTime.MinValue &&
-                            DateTime.UtcNow < DS4LightBar.BatteryHoldUntil[bi]) { batteryActiveBt = true; break; }
-                    }
-                    if (!batteryActiveBt)
-                    {
-                        for (int ci = 0; ci < DS4LightBar.ConnectHoldUntil.Length; ci++)
-                        {
-                            if (DS4LightBar.ConnectHoldUntil[ci] != DateTime.MinValue &&
-                                DateTime.UtcNow < DS4LightBar.ConnectHoldUntil[ci])
-                            {
-                                var connectSnapshot = outputState with
-                                {
-                                    ProfileLightbar = new DS4LightbarState
-                                    {
-                                        LightBarColor = DS4LightBar.ConnectHoldColor[ci],
-                                        LightBarFlashDurationOn = 0,
-                                        LightBarFlashDurationOff = 0,
-                                        LightBarExplicitlyOff = true,
-                                    },
-                                };
-                                MergeProfileLightbarIntoV5AudioSnapshot(connectSnapshot,
-                                    latestBluetoothCombinedSpeakerReport,
-                                    BluetoothCombinedStateOffset);
-                                break;
-                            }
-                        }
-                    }
+                    MergeProfileLightbarIntoV5AudioSnapshot(
+                        physicalOutputStateMailbox.ReadLatest(),
+                        latestBluetoothCombinedSpeakerReport,
+                        BluetoothCombinedStateOffset);
                 }
                 // A native HID SET_REPORT is state-only. VIIPER attaches the
                 // current media snapshot so state and media can share one
@@ -6874,6 +6851,13 @@ namespace DS4Windows.InputDevices
                 // even while speaker and microphone media are idle.
                 if (conType == ConnectionType.BT)
                 {
+                    bool lightbarHoldActive = AnyLightbarHoldActive();
+                    if (lightbarHoldActive)
+                    {
+                        MergeHeldLightbarIntoBluetoothCache();
+                    }
+
+                    bool directControlAttempted = false;
                     published = bluetoothCacheAdmitted;
                     if (published &&
                         (preparedProfileMuteReleaseStrobes != 0 || preparedDsxReleaseFields != 0))
@@ -6895,6 +6879,26 @@ namespace DS4Windows.InputDevices
                                     preparedProfileMuteReleaseStrobes,
                                 dsxReleaseFields: preparedDsxReleaseFields);
                     }
+                    else if (published && lightbarHoldActive)
+                    {
+                        // Time-critical hold color: a speaker-clocked
+                        // template only reaches the controller on the next
+                        // audio frame, and a VIIPER stream that is waiting
+                        // or recovering may not deliver one inside the
+                        // 1 second hold. Send a direct control report now,
+                        // with completion, like mute release strobes.
+                        published =
+                            TryWriteCachedBluetoothCombinedControlReport(
+                                includeNativeHaptics: true,
+                                reportDescription: "lightbar hold",
+                                waitForCompletion: true,
+                                allowDuringStopping: false,
+                                outputState: activePhysicalOutputState,
+                                profileMuteReleaseStrobes:
+                                    preparedProfileMuteReleaseStrobes,
+                                dsxReleaseFields: preparedDsxReleaseFields);
+                        directControlAttempted = true;
+                    }
                     else if (published)
                     {
                         published = TryPublishCachedBluetoothCombinedState(
@@ -6903,6 +6907,29 @@ namespace DS4Windows.InputDevices
                                 "Merged controller state into the next speaker-clocked combined Bluetooth report.",
                             idleReportDescription: "controller state",
                             out _);
+                    }
+                    if (!published && !directControlAttempted)
+                    {
+                        // Speaker-clocked publish failed, or the cache was
+                        // never admitted: do not leave the LED waiting for
+                        // the next audio frame. One direct control report
+                        // with the current cache, which already carries the
+                        // held color when a hold is active.
+                        if (lightbarHoldActive)
+                        {
+                            MergeHeldLightbarIntoBluetoothCache();
+                        }
+
+                        published =
+                            TryWriteCachedBluetoothCombinedControlReport(
+                                includeNativeHaptics: true,
+                                reportDescription: "Bluetooth controller state",
+                                waitForCompletion: true,
+                                allowDuringStopping: false,
+                                outputState: activePhysicalOutputState,
+                                profileMuteReleaseStrobes:
+                                    preparedProfileMuteReleaseStrobes,
+                                dsxReleaseFields: preparedDsxReleaseFields);
                     }
                 }
                 else
@@ -7116,6 +7143,17 @@ namespace DS4Windows.InputDevices
                     {
                         MergeProfileLightbarIntoV5AudioSnapshot(
                             activePhysicalOutputState,
+                            latestBluetoothCombinedSpeakerReport,
+                            BluetoothCombinedStateOffset);
+                    }
+                    // Lightbar hold wins over native game ownership in
+                    // this tick path too: merge the faded mailbox color
+                    // regardless of ownership, so a game report each frame
+                    // cannot keep a battery/connect color out of the cache.
+                    if (AnyLightbarHoldActive())
+                    {
+                        MergeProfileLightbarIntoV5AudioSnapshot(
+                            physicalOutputStateMailbox.ReadLatest(),
                             latestBluetoothCombinedSpeakerReport,
                             BluetoothCombinedStateOffset);
                     }
@@ -7384,10 +7422,64 @@ namespace DS4Windows.InputDevices
         // during the hold.
         internal void ForceBatteryLightbarOwnership()
         {
-            if (physicalOutputStateMailbox.
-                SetNativeGameLightbarOwnershipReleased(true))
+            // Queue every tick during a hold, not only on the first
+            // ownership change: a game native report each frame can
+            // otherwise reclaim ownership and overwrite the hold color
+            // before the physical output worker sends it. This changes
+            // only the visual ownership bit, not triggers, rumble,
+            // audio, or mic state.
+            physicalOutputStateMailbox.
+                SetNativeGameLightbarOwnershipReleased(true);
+            QueuePhysicalOutputUpdate();
+        }
+
+        internal static bool AnyLightbarHoldActive()
+        {
+            DateTime now = DateTime.UtcNow;
+            for (int i = 0; i < DS4LightBar.BatteryHoldUntil.Length; i++)
             {
-                QueuePhysicalOutputUpdate();
+                if (DS4LightBar.BatteryHoldUntil[i] != DateTime.MinValue &&
+                    now < DS4LightBar.BatteryHoldUntil[i])
+                {
+                    return true;
+                }
+            }
+
+            for (int i = 0; i < DS4LightBar.ConnectHoldUntil.Length; i++)
+            {
+                if (DS4LightBar.ConnectHoldUntil[i] != DateTime.MinValue &&
+                    now < DS4LightBar.ConnectHoldUntil[i])
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private bool MergeHeldLightbarIntoBluetoothCache()
+        {
+            if (!AnyLightbarHoldActive())
+            {
+                return false;
+            }
+
+            lock (bluetoothCombinedSpeakerReportLock)
+            {
+                if (!bluetoothCombinedSpeakerReportAvailable)
+                {
+                    return false;
+                }
+
+                // DS4LightBar already resolved battery-over-connect
+                // priority and applied the 600/420 ms fade into the
+                // mailbox, so merge that faded color, never a raw hold
+                // color, which would snap instead of fading.
+                MergeProfileLightbarIntoV5AudioSnapshot(
+                    physicalOutputStateMailbox.ReadLatest(),
+                    latestBluetoothCombinedSpeakerReport,
+                    BluetoothCombinedStateOffset);
+                return true;
             }
         }
 
@@ -8284,39 +8376,13 @@ namespace DS4Windows.InputDevices
             if (!color.HasValue && (releasedFields & DualSenseDsxOverlay.ColorField) != 0)
                 color = !outputState.NativeGameLightbarOwnershipReleased && native.Color.HasValue
                     ? native.Color : outputState.ProfileLightbar.LightBarColor;
-            // 2026-10-31: battery hold forces over Steam/game native color,
-            // at the final native report stage, regardless of ownership.
-            for (int bi = 0; bi < DS4LightBar.BatteryHoldUntil.Length; bi++)
+            // Lightbar hold, faded mailbox color only: DS4LightBar already
+            // resolved battery-over-connect priority and applied the fade
+            // into the mailbox ProfileLightbar, so use that color, never
+            // the raw hold color, which would snap instead of fading.
+            if (AnyLightbarHoldActive())
             {
-                if (DS4LightBar.BatteryHoldUntil[bi] != DateTime.MinValue &&
-                    DateTime.UtcNow < DS4LightBar.BatteryHoldUntil[bi])
-                {
-                    color = DS4LightBar.BatteryHoldColor[bi];
-                    break;
-                }
-            }
-            // Connect hold, battery still wins: if no battery hold was
-            // applied above, a connect hold color wins in this report.
-            if (!color.HasValue || true)
-            {
-                bool batteryActiveDsx = false;
-                for (int bi = 0; bi < DS4LightBar.BatteryHoldUntil.Length; bi++)
-                {
-                    if (DS4LightBar.BatteryHoldUntil[bi] != DateTime.MinValue &&
-                        DateTime.UtcNow < DS4LightBar.BatteryHoldUntil[bi]) { batteryActiveDsx = true; break; }
-                }
-                if (!batteryActiveDsx)
-                {
-                    for (int ci = 0; ci < DS4LightBar.ConnectHoldUntil.Length; ci++)
-                    {
-                        if (DS4LightBar.ConnectHoldUntil[ci] != DateTime.MinValue &&
-                            DateTime.UtcNow < DS4LightBar.ConnectHoldUntil[ci])
-                        {
-                            color = DS4LightBar.ConnectHoldColor[ci];
-                            break;
-                        }
-                    }
-                }
+                color = outputState.ProfileLightbar.LightBarColor;
             }
             if (color.HasValue)
             {
