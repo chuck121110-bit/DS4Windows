@@ -220,6 +220,11 @@ namespace DS4Windows
                 {
                     if (!IsSonyName(ep.Description)) { continue; }
                     if (IsStarted(ep.Status)) { continue; }
+                    if (IsPlainMainDualSenseAudio(ep.Description))
+                    {
+                        Log($"Main audio: cleanup skipped plain DualSense endpoint {ep.Description} ({ep.InstanceId}, {ep.Status}), it is the main audio device and must not be deleted on disconnect.");
+                        continue;
+                    }
                     try
                     {
                         RunPnputil(new[] { "/remove-device", ep.InstanceId });
@@ -306,6 +311,20 @@ namespace DS4Windows
                 Log($"Numbered audio fixer: Sony USB enumeration failed: {ex.GetType().Name}: {ex.Message}");
             }
             return result;
+        }
+
+        // 2026-11-02 one main audio device: never remove a
+        // plain DualSense endpoint, even if it is non-active.
+        // A retained virtual device's endpoints can show
+        // Disconnected/Unknown after a physical disconnect, and
+        // deleting them forces a new device on reconnect.
+        private static bool IsPlainMainDualSenseAudio(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) { return false; }
+            string n = name.Trim();
+            return string.Equals(n, "Speakers (DualSense Wireless Controller)", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(n, "Headset Microphone (DualSense Wireless Controller)", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(n, "Headset Earphone (DualSense Wireless Controller)", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsSonyName(string name)

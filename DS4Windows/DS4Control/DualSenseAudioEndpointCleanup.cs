@@ -91,6 +91,27 @@ namespace DS4Windows
                 name.IndexOf("DualShock", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
+        // 2026-11-02 one main audio device: a plain, unnumbered
+        // DualSense endpoint is the main audio device, even when
+        // Windows reports it Disconnected/Unknown after a physical
+        // disconnect, because the retained virtual device keeps it.
+        // NEVER delete it in cleanup. Deleting it was the 19:34 bug:
+        // cleanup removed plain Speakers/Mic, then DS4 plugged in a
+        // new virtual DualSense instead of reusing the retained one.
+        // Only numbered (2-, 3-, ...) and non-DualSense Sony ghosts
+        // may be removed. A plain DualSense endpoint is removed
+        // only by an explicit user action in Device Manager, never
+        // by this automatic cleanup.
+        private static bool IsPlainMainDualSenseAudioEndpointName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return false;
+            string n = name.Trim();
+            return string.Equals(n, "Speakers (DualSense Wireless Controller)", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(n, "Headset Microphone (DualSense Wireless Controller)", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(n, "Headset Earphone (DualSense Wireless Controller)", StringComparison.OrdinalIgnoreCase);
+        }
+
         public static void CleanupStaleDualSenseAudioDevices()
         {
             try
@@ -301,6 +322,7 @@ namespace DS4Windows
                 {
                     if (!present.Contains(pair.Key) &&
                         IsSonyAudioEndpointName(pair.Value) &&
+                        !IsPlainMainDualSenseAudioEndpointName(pair.Value) &&
                         pair.Key.StartsWith(@"SWD\MMDEVAPI\",
                             StringComparison.OrdinalIgnoreCase) &&
                         !result.Contains(pair.Key))
@@ -420,6 +442,7 @@ namespace DS4Windows
                     string.Equals(currentClass, "AudioEndpoint",
                         StringComparison.OrdinalIgnoreCase) &&
                     IsSonyAudioEndpointName(currentDescription) &&
+                    !IsPlainMainDualSenseAudioEndpointName(currentDescription) &&
                     currentInstanceId.StartsWith(@"SWD\MMDEVAPI\",
                         StringComparison.OrdinalIgnoreCase) &&
                     !instanceIds.Contains(currentInstanceId))
