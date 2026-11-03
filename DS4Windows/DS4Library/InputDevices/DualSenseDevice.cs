@@ -6887,9 +6887,20 @@ namespace DS4Windows.InputDevices
                         // or recovering may not deliver one inside the
                         // 1 second hold. Send a direct control report now,
                         // with completion, like mute release strobes.
+                        // 2026-11-03 vibration fix: this is an LED-only
+                        // report. With includeNativeHaptics true it copied
+                        // the cached game/audio haptics frame and set a
+                        // persistent haptics expiry, so every tick during
+                        // a hold (ForceBatteryLightbarOwnership queues an
+                        // output every tick) re-presented the same haptics
+                        // pulse, causing pulsing vibration. With false,
+                        // the haptics bytes are cleared and expiry is 0,
+                        // so LED ticks never replay game/audio rumble.
+                        // Game rumble still goes through its own normal
+                        // path, untouched.
                         published =
                             TryWriteCachedBluetoothCombinedControlReport(
-                                includeNativeHaptics: true,
+                                includeNativeHaptics: false,
                                 reportDescription: "lightbar hold",
                                 waitForCompletion: true,
                                 allowDuringStopping: false,
@@ -7449,6 +7460,21 @@ namespace DS4Windows.InputDevices
             {
                 if (DS4LightBar.ConnectHoldUntil[i] != DateTime.MinValue &&
                     now < DS4LightBar.ConnectHoldUntil[i])
+                {
+                    return true;
+                }
+            }
+
+            // 2026-11-03 fade-out latch fix: a battery fade-out (plus its
+            // 750 ms grace, so the final profile color lands) is a hold
+            // for transport. Without this, fade-out colors were computed
+            // in DS4LightBar but never merged into the BT cache and never
+            // direct-sent, because BatteryHoldUntil is already MinValue
+            // during fade-out. The BT cache then kept the battery color
+            // indefinitely, and only a controller power cycle cleared it.
+            for (int i = 0; i < Global.MAX_DS4_CONTROLLER_COUNT; i++)
+            {
+                if (DS4LightBar.IsBatteryFadeOutActive(i))
                 {
                     return true;
                 }

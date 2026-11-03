@@ -84,6 +84,26 @@ namespace DS4Windows
         // battery fade-in, and all other logic are untouched.
         private static bool[] batteryHoldWasActive = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
         private static bool[] batteryFadingOut = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static DateTime[] batteryFadeOutGraceUntil = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
+
+        // 2026-11-03 vibration + fade-out fix: a battery fade-out is a
+        // lightbar hold for transport purposes. The previous fade-out
+        // only changed the color in software; DualSenseDevice gated
+        // its direct BT control send on BatteryHoldUntil, which is
+        // already MinValue during fade-out, so the interpolated colors
+        // and the final profile color were left to the speaker-clocked
+        // path, which stalls when the VIIPER audio stream is waiting,
+        // and the BT cache kept the stale battery color. This accessor
+        // lets DualSenseDevice treat fade-out (plus a short grace after
+        // it, so the final profile color lands) as hold-active.
+        public static bool IsBatteryFadeOutActive(int deviceNum)
+        {
+            if (deviceNum < 0 || deviceNum >= Global.MAX_DS4_CONTROLLER_COUNT)
+                return false;
+            return batteryFadingOut[deviceNum] ||
+                (batteryFadeOutGraceUntil[deviceNum] != DateTime.MinValue &&
+                 DateTime.UtcNow < batteryFadeOutGraceUntil[deviceNum]);
+        }
         private static DateTime[] batteryFadeOutStart = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
         private static DS4Color[] batteryFadeOutFrom = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
         private static DS4Color[] batteryFadeOutTo = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
@@ -454,6 +474,7 @@ namespace DS4Windows
                         color = batteryFadeOutTo[deviceNum];
                         batteryFadingOut[deviceNum] = false;
                         fading[deviceNum] = false;
+                        batteryFadeOutGraceUntil[deviceNum] = tickNow.AddMilliseconds(750);
                     }
                     else
                     {
@@ -482,6 +503,27 @@ namespace DS4Windows
                 else if (batteryFadingOut[deviceNum] && isFreshConnect)
                 {
                     batteryFadingOut[deviceNum] = false;
+                }
+
+                // Fade-out grace: after the fade-out ends, keep
+                // queuing a physical output for 750 ms so the final
+                // profile color is direct-sent, not left to the stalled
+                // speaker clock. Normal profile logic already yields
+                // that same color, so this changes transport only.
+                if (!batteryFadingOut[deviceNum] &&
+                    batteryFadeOutGraceUntil[deviceNum] != DateTime.MinValue)
+                {
+                    if (tickNow < batteryFadeOutGraceUntil[deviceNum])
+                    {
+                        if (device is DS4Windows.InputDevices.DualSenseDevice dsDeviceGrace)
+                        {
+                            dsDeviceGrace.ForceBatteryLightbarOwnership();
+                        }
+                    }
+                    else
+                    {
+                        batteryFadeOutGraceUntil[deviceNum] = DateTime.MinValue;
+                    }
                 }
 
                 // Fade in/out: smooth any color change over 600 ms.
