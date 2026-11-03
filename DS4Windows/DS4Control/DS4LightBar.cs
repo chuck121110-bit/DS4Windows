@@ -537,11 +537,30 @@ namespace DS4Windows
                     (DistanceProfiles[deviceNum] || tempprofileDistance[deviceNum]);
                 if (!skipFade)
                 {
-                    if (isFreshConnect && !lastSentValid[deviceNum])
+                    if (isFreshConnect)
                     {
+                        // 2026-11-03 connect fade fix, connect logic only:
+                        // lastSentValid and fading are static and survive a
+                        // controller disconnect in the same DS4 process, and
+                        // the disconnect tick leaves a fade toward black
+                        // behind. The old gate (isFreshConnect &&
+                        // !lastSentValid) therefore skipped the connect fade
+                        // on every reconnect after the first DS4 start, and
+                        // the first connect tick could instead complete the
+                        // stale disconnect fade to black. A profile switch,
+                        // by contrast, changes color, so it still triggered
+                        // the generic fade, imperfectly, from the stale
+                        // last-sent color. Force a fresh fade on every fresh
+                        // connect, from black to the connect-hold color.
                         // Final 2026-11-01: do NOT set DS4 blue on connect.
                         // Firmware blue fades out on its own, DS4 fades
                         // in from black only, then to profile/custom.
+                        // Clear only stale battery fade-out transport state
+                        // left from the previous session; battery check
+                        // trigger, hold, fade-in, and fade-out code itself
+                        // is untouched, and ConnectHold still makes this a
+                        // direct-sent hold for transport.
+                        batteryFadeOutGraceUntil[deviceNum] = DateTime.MinValue;
                         fadeFromColor[deviceNum] = new DS4Color(0, 0, 0);
                         fadeToColor[deviceNum] = color;
                         fadeStart[deviceNum] = tickNow;
