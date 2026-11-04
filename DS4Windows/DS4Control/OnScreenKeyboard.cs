@@ -143,6 +143,11 @@ namespace DS4Windows
         private static readonly int[] selCol = new int[Global.MAX_DS4_CONTROLLER_COUNT];
         private static readonly bool[] capsOn = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
         private static readonly bool[] shiftLatch = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static readonly bool[] shiftHeld = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static readonly int[] pressedRow = new int[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static readonly int[] pressedCol = new int[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static readonly int[] pressedPanel = new int[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static readonly DateTime[] pressedAt = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
         private static readonly bool[] emojiPanel = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
         private static readonly bool[] symbolsPanel = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
         private static readonly int[] movePos = new int[Global.MAX_DS4_CONTROLLER_COUNT];
@@ -169,8 +174,37 @@ namespace DS4Windows
         public static int SelectedCol(int device) => selCol[device];
         public static bool CapsOn(int device) => capsOn[device];
         public static bool ShiftLatch(int device) => shiftLatch[device];
-        public static void SetShiftLatch(int device) { if (device >= 0 && device < shiftLatch.Length) shiftLatch[device] = true; }
-        public static void ClearShiftLatch(int device) { if (device >= 0 && device < shiftLatch.Length) shiftLatch[device] = false; }
+        public static bool ShiftHeld(int device) => device >= 0 && device < shiftHeld.Length && shiftHeld[device];
+        public static void SetShiftHeld(int device, bool held)
+        {
+            if (device < 0 || device >= shiftHeld.Length) return;
+            if (shiftHeld[device] == held) return;
+            shiftHeld[device] = held;
+            try { SelectionChanged?.Invoke(device); } catch { }
+        }
+        public static void SetShiftLatch(int device) { if (device >= 0 && device < shiftLatch.Length) { shiftLatch[device] = true; try { SelectionChanged?.Invoke(device); } catch { } } }
+        public static void ClearShiftLatch(int device) { if (device >= 0 && device < shiftLatch.Length) { if (!shiftLatch[device]) return; shiftLatch[device] = false; try { SelectionChanged?.Invoke(device); } catch { } } }
+        public static void MarkPressed(int device)
+        {
+            if (device < 0 || device >= pressedRow.Length || !IsActive(device)) return;
+            pressedPanel[device] = symbolsPanel[device] ? 2 : (emojiPanel[device] ? 1 : 0);
+            pressedRow[device] = pressedPanel[device] == 0 ? selRow[device] : 0;
+            pressedCol[device] = selCol[device];
+            pressedAt[device] = DateTime.UtcNow;
+            try { SelectionChanged?.Invoke(device); } catch { }
+        }
+        public static void MarkPressedAt(int device, int row, int col, int panel)
+        {
+            if (device < 0 || device >= pressedRow.Length) return;
+            pressedRow[device] = row; pressedCol[device] = col; pressedPanel[device] = panel;
+            pressedAt[device] = DateTime.UtcNow;
+        }
+        public static bool IsPressed(int device, int row, int col, int panel)
+        {
+            if (device < 0 || device >= pressedRow.Length) return false;
+            return pressedRow[device] == row && pressedCol[device] == col && pressedPanel[device] == panel &&
+                (DateTime.UtcNow - pressedAt[device]).TotalMilliseconds < 400;
+        }
         public static bool EmojiPanelActive(int device) => emojiPanel[device];
         public static bool SymbolsPanelActive(int device) => symbolsPanel[device];
         public static int MovePosition(int device) => movePos[device];
@@ -196,6 +230,7 @@ namespace DS4Windows
             emojiPanel[device] = false;
             symbolsPanel[device] = false;
             movePos[device] = 0;
+            pressedAt[device] = DateTime.MinValue;
             lastNavTime[device] = DateTime.MinValue;
             lastNavDx[device] = 0;
             lastNavDy[device] = 0;
@@ -214,6 +249,8 @@ namespace DS4Windows
             useTouchpadCursor[device] = false;
             emojiPanel[device] = false;
             symbolsPanel[device] = false;
+            shiftHeld[device] = false;
+            pressedAt[device] = DateTime.MinValue;
             try { KeyboardClosed?.Invoke(device); } catch { }
         }
 

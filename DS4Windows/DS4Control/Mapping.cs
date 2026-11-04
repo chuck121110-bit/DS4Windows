@@ -3769,6 +3769,7 @@ namespace DS4Windows
             OnScreenKeyboardState.TryMoveWithRepeat(device, dx, dy, now);
 
             bool shiftHeld = cState.L2 >= 128 || cState.L2Btn;
+            OnScreenKeyboardState.SetShiftHeld(device, shiftHeld);
             bool cross = cState.Cross;
             bool circle = cState.Circle;
             bool square = cState.Square;
@@ -3794,6 +3795,7 @@ namespace DS4Windows
         {
             if (!OnScreenKeyboardState.IsActive(device))
                 return;
+            OnScreenKeyboardState.MarkPressed(device);
             OnScreenKeyboardState.KeyDef key = OnScreenKeyboardState.CurrentKey(device);
             switch (key.Kind)
             {
