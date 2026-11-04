@@ -4091,6 +4091,22 @@ namespace DS4Windows
             }
 
             ViiperOutDevice primary = outputDevices[index] as ViiperOutDevice;
+            // 2026-11-03, one-main-audio fix: a gamepad-only primary has
+            // no audio, no atomic haptics, and no microphone. Returning
+            // it here hid the audio-only sidecar from every caller,
+            // including the status lane check, which then reported
+            // Needs attention forever. When the primary is gamepad-only,
+            // the persistent audio-only sidecar is the PlayStation
+            // audio output, not the primary.
+            if (primary != null && primary.IsGamepadOnly)
+            {
+                lock (playStationFeatureOutputLock)
+                {
+                    ViiperOutDevice sidecar = playStationFeatureOutputDevices[index];
+                    if (sidecar != null)
+                        return sidecar;
+                }
+            }
             if (primary != null &&
                 PlayStationFeatureOutputPolicy.IsPlayStationAudioOutput(
                     primary.OutputType))
@@ -4229,7 +4245,7 @@ namespace DS4Windows
                     sidecar.BindPhysicalController(index);
                     sidecar.Connect();
                     playStationFeatureOutputDevices[index] = sidecar;
-                    LogDebug($"Main audio: created one DualSense audio-only sidecar for controller #{index + 1}, retained across disconnects and profile switches, destroyed only on DS4 stop", false);
+                    LogDebug($"Main audio: created one DualSense audio-only sidecar for controller #{index + 1}, retained across disconnects and profile switches and on DS4 stop, removed only by the Settings remove button", false);
                     StartupDiag(
                         $"Persistent PlayStation audio owner ready index={index} type={desiredSidecar} port={sidecar.DirectSpeakerUsbipPort}");
                     return sidecar;
@@ -5415,9 +5431,12 @@ namespace DS4Windows
                     ? ControllerRuntimeLaneState.NotRequired
                     : advancedHapticsOutput?.SupportsAtomicAudioHaptics == true
                         ? ControllerRuntimeLaneState.Ready
-                        : virtualConnected
-                            ? ControllerRuntimeLaneState.Unavailable
-                            : ControllerRuntimeLaneState.Starting;
+                        : advancedHapticsOutput != null &&
+                            !advancedHapticsOutput.IsRuntimeConnected
+                            ? ControllerRuntimeLaneState.Starting
+                            : virtualConnected
+                                ? ControllerRuntimeLaneState.Unavailable
+                                : ControllerRuntimeLaneState.Starting;
 
             // A shared profile can retain Sony media settings while running
             // on Switch 2 or another controller. Require a lane only when the
@@ -6121,6 +6140,10 @@ namespace DS4Windows
                 dualSenseDevice);
             Volatile.Write(ref dualSenseMuteOutputSignatures[ind],
                 publicationSignature);
+            if (muteLatched && !policy.OverridesMuteLed)
+            {
+                LogDebug("DualSense mute pressed, microphone muted, but the mute button light is off in this profile, so the button will not go orange. To see orange, turn on Enable mute button light in Profile Editor, DualSense mute button, with Mute Button Mutes Input/Output on.", false);
+            }
             return true;
         }
 

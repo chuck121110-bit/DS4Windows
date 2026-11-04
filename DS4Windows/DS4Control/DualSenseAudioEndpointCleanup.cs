@@ -112,7 +112,22 @@ namespace DS4Windows
                 string.Equals(n, "Headset Earphone (DualSense Wireless Controller)", StringComparison.OrdinalIgnoreCase);
         }
 
+        // 2026-11-03, Chuck's never-remove rule: neither the main DualSense
+        // speaker nor the main DualSense microphone is ever removed
+        // automatically, on DS4 start, connect, profile switch, disconnect,
+        // or DS4 stop, no matter what. The old automatic cleanup is kept
+        // only behind RemoveMainAudioDevicesExplicit, which is called
+        // only from the Settings button in MainWindow, the one removal
+        // path Chuck asked for. All automatic callers now hit this
+        // no-op and log why, instead of silently deleting a device
+        // that later comes back with a new Windows ID and breaks
+        // SteelSeries Sonar ordering.
         public static void CleanupStaleDualSenseAudioDevices()
+        {
+            Log("Main audio: automatic DualSense audio removal skipped, never-remove rule, use Settings, Remove main DualSense audio device, to remove it explicitly.");
+        }
+
+        public static void RemoveMainAudioDevicesExplicit()
         {
             try
             {
