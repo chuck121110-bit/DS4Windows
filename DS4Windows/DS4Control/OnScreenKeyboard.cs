@@ -17,8 +17,9 @@ namespace DS4Windows
     {
         public enum KeyKind
         {
-            Char, Backspace, Enter, Space, ShiftHold, Caps, Hide,
+            Char, Backspace, Enter, Space, ShiftHold, Caps, Hide, Move,
             EmojiToggle, ArrowLeft, ArrowDown, ArrowUp, ArrowRight, Emoji,
+            Tab, SymbolsToggle, Symbol,
         }
 
         public struct KeyDef
@@ -35,62 +36,74 @@ namespace DS4Windows
 
         // Rows, top to bottom. The last row is the bottom row: emoji
         // toggle, arrows, Hide. The row above it is caps / shift / space.
+        // Steam one-to-one layout, from Chuck's photo. No Paste key.
+        // Bottom row: emoji, triangle/symbols, wide Space, left, right,
+        // Move (wider, filling the Paste space). Up/down typing keys are
+        // not in the Steam photo, so they are not on this layout;
+        // D-pad / stick up/down still move the highlight.
         public static readonly KeyDef[][] Rows = new KeyDef[][]
         {
-            // Row 0: numbers, backspace slightly smaller (layout only;
-            // the window gives Backspace fewer columns, not a thin key).
             new KeyDef[]
             {
-                new KeyDef(KeyKind.Char, "1", 0x31, "1"), new KeyDef(KeyKind.Char, "2", 0x32, "2"),
-                new KeyDef(KeyKind.Char, "3", 0x33, "3"), new KeyDef(KeyKind.Char, "4", 0x34, "4"),
-                new KeyDef(KeyKind.Char, "5", 0x35, "5"), new KeyDef(KeyKind.Char, "6", 0x36, "6"),
-                new KeyDef(KeyKind.Char, "7", 0x37, "7"), new KeyDef(KeyKind.Char, "8", 0x38, "8"),
-                new KeyDef(KeyKind.Char, "9", 0x39, "9"), new KeyDef(KeyKind.Char, "0", 0x30, "0"),
-                new KeyDef(KeyKind.Backspace, "Backspace", 0x08),
+                new KeyDef(KeyKind.Char, "~\n`", 0xC0, "`"),
+                new KeyDef(KeyKind.Char, "!\n1", 0x31, "1"),
+                new KeyDef(KeyKind.Char, "@\n2", 0x32, "2"),
+                new KeyDef(KeyKind.Char, "#\n3", 0x33, "3"),
+                new KeyDef(KeyKind.Char, "$\n4", 0x34, "4"),
+                new KeyDef(KeyKind.Char, "%\n5", 0x35, "5"),
+                new KeyDef(KeyKind.Char, "^\n6", 0x36, "6"),
+                new KeyDef(KeyKind.Char, "&\n7", 0x37, "7"),
+                new KeyDef(KeyKind.Char, "*\n8", 0x38, "8"),
+                new KeyDef(KeyKind.Char, "(\n9", 0x39, "9"),
+                new KeyDef(KeyKind.Char, ")\n0", 0x30, "0"),
+                new KeyDef(KeyKind.Char, "_\n-", 0xBD, "-"),
+                new KeyDef(KeyKind.Char, "+\n=", 0xBB, "="),
+                new KeyDef(KeyKind.Backspace, "\u25a1 Backspace", 0x08),
             },
-            // Row 1: QWERTY, Enter slightly smaller.
             new KeyDef[]
             {
-                new KeyDef(KeyKind.Char, "Q", 0x51, "q"), new KeyDef(KeyKind.Char, "W", 0x57, "w"),
-                new KeyDef(KeyKind.Char, "E", 0x45, "e"), new KeyDef(KeyKind.Char, "R", 0x52, "r"),
-                new KeyDef(KeyKind.Char, "T", 0x54, "t"), new KeyDef(KeyKind.Char, "Y", 0x59, "y"),
-                new KeyDef(KeyKind.Char, "U", 0x55, "u"), new KeyDef(KeyKind.Char, "I", 0x49, "i"),
-                new KeyDef(KeyKind.Char, "O", 0x4F, "o"), new KeyDef(KeyKind.Char, "P", 0x50, "p"),
-                new KeyDef(KeyKind.Enter, "Enter", 0x0D),
+                new KeyDef(KeyKind.Tab, "Tab", 0x09),
+                new KeyDef(KeyKind.Char, "q", 0x51, "q"), new KeyDef(KeyKind.Char, "w", 0x57, "w"),
+                new KeyDef(KeyKind.Char, "e", 0x45, "e"), new KeyDef(KeyKind.Char, "r", 0x52, "r"),
+                new KeyDef(KeyKind.Char, "t", 0x54, "t"), new KeyDef(KeyKind.Char, "y", 0x59, "y"),
+                new KeyDef(KeyKind.Char, "u", 0x55, "u"), new KeyDef(KeyKind.Char, "i", 0x49, "i"),
+                new KeyDef(KeyKind.Char, "o", 0x4F, "o"), new KeyDef(KeyKind.Char, "p", 0x50, "p"),
+                new KeyDef(KeyKind.Char, "{\n[", 0xDB, "["),
+                new KeyDef(KeyKind.Char, "}\n]", 0xDD, "]"),
+                new KeyDef(KeyKind.Char, "|\n\\", 0xDC, "\\"),
             },
-            // Row 2: home row.
             new KeyDef[]
             {
-                new KeyDef(KeyKind.Char, "A", 0x41, "a"), new KeyDef(KeyKind.Char, "S", 0x53, "s"),
-                new KeyDef(KeyKind.Char, "D", 0x44, "d"), new KeyDef(KeyKind.Char, "F", 0x46, "f"),
-                new KeyDef(KeyKind.Char, "G", 0x47, "g"), new KeyDef(KeyKind.Char, "H", 0x48, "h"),
-                new KeyDef(KeyKind.Char, "J", 0x4A, "j"), new KeyDef(KeyKind.Char, "K", 0x4B, "k"),
-                new KeyDef(KeyKind.Char, "L", 0x4C, "l"),
+                new KeyDef(KeyKind.Caps, "L3 Caps"),
+                new KeyDef(KeyKind.Char, "a", 0x41, "a"), new KeyDef(KeyKind.Char, "s", 0x53, "s"),
+                new KeyDef(KeyKind.Char, "d", 0x44, "d"), new KeyDef(KeyKind.Char, "f", 0x46, "f"),
+                new KeyDef(KeyKind.Char, "g", 0x47, "g"), new KeyDef(KeyKind.Char, "h", 0x48, "h"),
+                new KeyDef(KeyKind.Char, "j", 0x4A, "j"), new KeyDef(KeyKind.Char, "k", 0x4B, "k"),
+                new KeyDef(KeyKind.Char, "l", 0x4C, "l"),
+                new KeyDef(KeyKind.Char, ":\n;", 0xBA, ";"),
+                new KeyDef(KeyKind.Char, "\"\n'", 0xDE, "'"),
+                new KeyDef(KeyKind.Enter, "R2 Enter", 0x0D),
             },
-            // Row 3: bottom row.
             new KeyDef[]
             {
-                new KeyDef(KeyKind.Char, "Z", 0x5A, "z"), new KeyDef(KeyKind.Char, "X", 0x58, "x"),
-                new KeyDef(KeyKind.Char, "C", 0x43, "c"), new KeyDef(KeyKind.Char, "V", 0x56, "v"),
-                new KeyDef(KeyKind.Char, "B", 0x42, "b"), new KeyDef(KeyKind.Char, "N", 0x4E, "n"),
-                new KeyDef(KeyKind.Char, "M", 0x4D, "m"),
+                new KeyDef(KeyKind.ShiftHold, "L2 Shift"),
+                new KeyDef(KeyKind.Char, "z", 0x5A, "z"), new KeyDef(KeyKind.Char, "x", 0x58, "x"),
+                new KeyDef(KeyKind.Char, "c", 0x43, "c"), new KeyDef(KeyKind.Char, "v", 0x56, "v"),
+                new KeyDef(KeyKind.Char, "b", 0x42, "b"), new KeyDef(KeyKind.Char, "n", 0x4E, "n"),
+                new KeyDef(KeyKind.Char, "m", 0x4D, "m"),
+                new KeyDef(KeyKind.Char, "<\n,", 0xBC, ","),
+                new KeyDef(KeyKind.Char, ">\n.", 0xBE, "."),
+                new KeyDef(KeyKind.Char, "?\n/", 0xBF, "/"),
+                new KeyDef(KeyKind.ShiftHold, "L2 Shift"),
             },
-            // Row 4: caps lock, shift hold, space. Full width, not squished.
             new KeyDef[]
             {
-                new KeyDef(KeyKind.Caps, "Caps Lock"),
-                new KeyDef(KeyKind.ShiftHold, "Shift (hold)"),
+                new KeyDef(KeyKind.EmojiToggle, "\U0001F60A"),
+                new KeyDef(KeyKind.SymbolsToggle, "\u25b3"),
                 new KeyDef(KeyKind.Space, "Space", 0x20, " "),
-            },
-            // Row 5: bottom row, emojis, arrows, Hide.
-            new KeyDef[]
-            {
-                new KeyDef(KeyKind.EmojiToggle, "Emoji"),
-                new KeyDef(KeyKind.ArrowLeft, "Left", 0x25),
-                new KeyDef(KeyKind.ArrowDown, "Down", 0x28),
-                new KeyDef(KeyKind.ArrowUp, "Up", 0x26),
-                new KeyDef(KeyKind.ArrowRight, "Right", 0x27),
-                new KeyDef(KeyKind.Hide, "Hide"),
+                new KeyDef(KeyKind.ArrowLeft, "\u25c0", 0x25),
+                new KeyDef(KeyKind.ArrowRight, "\u25b6", 0x27),
+                new KeyDef(KeyKind.Move, "Move \u2304"),
             },
         };
 
@@ -107,6 +120,23 @@ namespace DS4Windows
             new KeyDef(KeyKind.Emoji, "Check", 0, "✅"),
         };
 
+        // Symbols panel, opened by the triangle key on the bottom row.
+        // Typed via Unicode, never via paste, and returns to letters
+        // after one symbol, like the emoji panel.
+        public static readonly KeyDef[] SymbolsRow = new KeyDef[]
+        {
+            new KeyDef(KeyKind.Symbol, "\u20ac", 0, "\u20ac"),
+            new KeyDef(KeyKind.Symbol, "\u00a3", 0, "\u00a3"),
+            new KeyDef(KeyKind.Symbol, "\u00a5", 0, "\u00a5"),
+            new KeyDef(KeyKind.Symbol, "\u00a9", 0, "\u00a9"),
+            new KeyDef(KeyKind.Symbol, "\u00ae", 0, "\u00ae"),
+            new KeyDef(KeyKind.Symbol, "\u2122", 0, "\u2122"),
+            new KeyDef(KeyKind.Symbol, "\u00b0", 0, "\u00b0"),
+            new KeyDef(KeyKind.Symbol, "\u00b1", 0, "\u00b1"),
+            new KeyDef(KeyKind.Symbol, "\u00d7", 0, "\u00d7"),
+            new KeyDef(KeyKind.Symbol, "\u00f7", 0, "\u00f7"),
+        };
+
         private static readonly bool[] active = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
         private static readonly bool[] useTouchpadCursor = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
         private static readonly int[] selRow = new int[Global.MAX_DS4_CONTROLLER_COUNT];
@@ -114,6 +144,8 @@ namespace DS4Windows
         private static readonly bool[] capsOn = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
         private static readonly bool[] shiftLatch = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
         private static readonly bool[] emojiPanel = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static readonly bool[] symbolsPanel = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static readonly int[] movePos = new int[Global.MAX_DS4_CONTROLLER_COUNT];
         // Navigation repeat state, per device.
         private static readonly DateTime[] lastNavTime = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
         private static readonly int[] lastNavDx = new int[Global.MAX_DS4_CONTROLLER_COUNT];
@@ -140,6 +172,14 @@ namespace DS4Windows
         public static void SetShiftLatch(int device) { if (device >= 0 && device < shiftLatch.Length) shiftLatch[device] = true; }
         public static void ClearShiftLatch(int device) { if (device >= 0 && device < shiftLatch.Length) shiftLatch[device] = false; }
         public static bool EmojiPanelActive(int device) => emojiPanel[device];
+        public static bool SymbolsPanelActive(int device) => symbolsPanel[device];
+        public static int MovePosition(int device) => movePos[device];
+        public static void CycleMovePosition(int device)
+        {
+            if (device < 0 || device >= movePos.Length) return;
+            movePos[device] = (movePos[device] + 1) % 3;
+            try { SelectionChanged?.Invoke(device); } catch { }
+        }
 
         public static void Open(int device, bool touchpadCursor)
         {
@@ -154,6 +194,8 @@ namespace DS4Windows
             capsOn[device] = false;
             shiftLatch[device] = false;
             emojiPanel[device] = false;
+            symbolsPanel[device] = false;
+            movePos[device] = 0;
             lastNavTime[device] = DateTime.MinValue;
             lastNavDx[device] = 0;
             lastNavDy[device] = 0;
@@ -171,11 +213,17 @@ namespace DS4Windows
             active[device] = false;
             useTouchpadCursor[device] = false;
             emojiPanel[device] = false;
+            symbolsPanel[device] = false;
             try { KeyboardClosed?.Invoke(device); } catch { }
         }
 
         public static KeyDef CurrentKey(int device)
         {
+            if (symbolsPanel[device])
+            {
+                int c = Math.Max(0, Math.Min(SymbolsRow.Length - 1, selCol[device]));
+                return SymbolsRow[c];
+            }
             if (emojiPanel[device])
             {
                 int c = Math.Max(0, Math.Min(EmojiRow.Length - 1, selCol[device]));
@@ -190,7 +238,13 @@ namespace DS4Windows
         {
             if (!IsActive(device))
                 return;
-            if (emojiPanel[device])
+            if (symbolsPanel[device])
+            {
+                int nc = selCol[device] + dx;
+                if (nc >= 0 && nc < SymbolsRow.Length)
+                    selCol[device] = nc;
+            }
+            else if (emojiPanel[device])
             {
                 int nc = selCol[device] + dx;
                 if (nc >= 0 && nc < EmojiRow.Length)
@@ -270,9 +324,22 @@ namespace DS4Windows
         {
             if (!IsActive(device))
                 return;
+            symbolsPanel[device] = false;
             emojiPanel[device] = !emojiPanel[device];
             selCol[device] = 0;
             if (!emojiPanel[device])
+                selRow[device] = 0;
+            try { SelectionChanged?.Invoke(device); } catch { }
+        }
+
+        public static void ToggleSymbolsPanel(int device)
+        {
+            if (!IsActive(device))
+                return;
+            emojiPanel[device] = false;
+            symbolsPanel[device] = !symbolsPanel[device];
+            selCol[device] = 0;
+            if (!symbolsPanel[device])
                 selRow[device] = 0;
             try { SelectionChanged?.Invoke(device); } catch { }
         }

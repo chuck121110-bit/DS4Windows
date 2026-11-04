@@ -3816,6 +3816,25 @@ namespace DS4Windows
                 case OnScreenKeyboardState.KeyKind.EmojiToggle:
                     OnScreenKeyboardState.ToggleEmojiPanel(device);
                     break;
+                case OnScreenKeyboardState.KeyKind.SymbolsToggle:
+                    OnScreenKeyboardState.ToggleSymbolsPanel(device);
+                    break;
+                case OnScreenKeyboardState.KeyKind.Symbol:
+                    OnScreenKeyboardState.SendUnicodeText(key.Text);
+                    OnScreenKeyboardState.ToggleSymbolsPanel(device);
+                    break;
+                case OnScreenKeyboardState.KeyKind.Move:
+                    // Steam Move: cycle overlay position, unless Shift
+                    // is held, in which case it closes like Hide did.
+                    if (shiftHeld || OnScreenKeyboardState.ShiftLatch(device))
+                        OnScreenKeyboardState.Close(device);
+                    else
+                        OnScreenKeyboardState.CycleMovePosition(device);
+                    break;
+                case OnScreenKeyboardState.KeyKind.Tab:
+                    TapMultiKeys(new List<ushort> { 0x09 }, DS4KeyType.None, false);
+                    OnScreenKeyboardState.ClearShiftLatch(device);
+                    break;
                 case OnScreenKeyboardState.KeyKind.Emoji:
                     // Emoji panel closes back to letters after typing
                     // one emoji, so the user is not stuck in the panel.

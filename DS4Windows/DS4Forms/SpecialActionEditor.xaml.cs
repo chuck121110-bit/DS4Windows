@@ -293,6 +293,16 @@ namespace DS4WinWPF.DS4Forms
             else
             {
                 saveBtn.IsEnabled = true;
+                // Show the default name as soon as a type is picked,
+                // but only if the user has not typed a name yet.
+                if (!specialActVM.EditMode && string.IsNullOrWhiteSpace(specialActVM.ActionName))
+                {
+                    DS4Windows.SpecialAction.ActionTypeId picked = specialActVM.TypeAssoc[specialActVM.ActionTypeIndex];
+                    string autoName = DefaultActionName(picked);
+                    specialActVM.ActionName = autoName;
+                    if (actionNameTxt != null)
+                        actionNameTxt.Text = autoName;
+                }
             }
 
             triggersListView.Visibility = Visibility.Visible;
@@ -306,9 +316,72 @@ namespace DS4WinWPF.DS4Forms
             Cancel?.Invoke(this, EventArgs.Empty);
         }
 
+        private string DefaultActionName(DS4Windows.SpecialAction.ActionTypeId typeId)
+        {
+            // Default name is the action itself. Generic type names are
+            // only a fallback; specific names come from the sub-view
+            // models' describe text when it is already filled in.
+            switch (typeId)
+            {
+                case DS4Windows.SpecialAction.ActionTypeId.Key:
+                    string kd = pressKeyVM != null ? pressKeyVM.DescribeText : null;
+                    return !string.IsNullOrEmpty(kd) && kd != "Select a Key" ? kd : "Press / Toggle Keys";
+                case DS4Windows.SpecialAction.ActionTypeId.SystemAction:
+                    string sd = systemActVM != null ? systemActVM.DescribeText : null;
+                    return !string.IsNullOrEmpty(sd) && sd != "Select a System Action" ? sd : "System Action";
+                case DS4Windows.SpecialAction.ActionTypeId.SwitchPrograms:
+                    return "Switch Programs";
+                case DS4Windows.SpecialAction.ActionTypeId.OnScreenKeyboard:
+                    return oskVM != null && oskVM.UseTouchpadCursor ? "On-Screen Keyboard (Touchpad Cursor)" : "On-Screen Keyboard";
+                case DS4Windows.SpecialAction.ActionTypeId.Macro:
+                    return "Macro";
+                case DS4Windows.SpecialAction.ActionTypeId.Program:
+                    return "Launch Program";
+                case DS4Windows.SpecialAction.ActionTypeId.Profile:
+                    return "Load Profile";
+                case DS4Windows.SpecialAction.ActionTypeId.DisconnectBT:
+                    return "Disconnect Bluetooth";
+                case DS4Windows.SpecialAction.ActionTypeId.BatteryCheck:
+                    return "Check Battery";
+                case DS4Windows.SpecialAction.ActionTypeId.MultiAction:
+                    return "Multi Action";
+                case DS4Windows.SpecialAction.ActionTypeId.SASteeringWheelEmulationCalibrate:
+                    return "Calibrate Steering Wheel";
+                case DS4Windows.SpecialAction.ActionTypeId.GyroCalibrate:
+                    return "Calibrate Gyro";
+                default:
+                    return "Special Action";
+            }
+        }
+
+        private bool IsGenericDefaultName(string name, DS4Windows.SpecialAction.ActionTypeId typeId)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return true;
+            // Generic fallbacks that should be replaced on save with
+            // the specific action, if one is now known.
+            if (typeId == DS4Windows.SpecialAction.ActionTypeId.Key && name == "Press / Toggle Keys")
+                return true;
+            if (typeId == DS4Windows.SpecialAction.ActionTypeId.SystemAction && name == "System Action")
+                return true;
+            return false;
+        }
+
         private void SaveBtn_Click(object sender, RoutedEventArgs e)
         {
             DS4Windows.SpecialAction.ActionTypeId typeId = specialActVM.TypeAssoc[specialActVM.ActionTypeIndex];
+            // Auto-name: only for a NEW action, and only if the name
+            // is blank or still the generic default. A name the user
+            // typed themselves is never overwritten here, and editing
+            // an existing action never renames it. Rename afterwards
+            // in the editor still works as before.
+            if (!specialActVM.EditMode && IsGenericDefaultName(specialActVM.ActionName, typeId))
+            {
+                string autoName = DefaultActionName(typeId);
+                specialActVM.ActionName = autoName;
+                if (actionNameTxt != null)
+                    actionNameTxt.Text = autoName;
+            }
             DS4Windows.SpecialAction tempAct = new DS4Windows.SpecialAction("null", "null", "null", "null");
             bool valid = specialActVM.IsValid(tempAct);
             if (valid)

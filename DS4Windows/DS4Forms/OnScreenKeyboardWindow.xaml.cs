@@ -9,7 +9,25 @@ using DS4Windows;
 
 namespace DS4WinWPF.DS4Forms
 {
-    // Plain placeholder layout for the on-screen keyboard logic build.
+    // Steam one-to-one overlay layout. This is NOT a normal titled
+    // window: WindowStyle=None, Topmost, NoActivate, ToolWindow,
+    // so it shows over every window without taking focus.
+    // Actual DS4Windows palette, from DS4Forms/Themes/DefaultTheme.xaml
+    // merged in App.xaml (DarkTheme is commented out):
+    // AccentColor #FF0066CC, BorderColor #FFC8C8C8,
+    // BackgroundColor SystemColors.WindowColor (white),
+    // SurfaceBackgroundColor #FFF5F7FA, CardBackgroundColor #FFFFFFFF,
+    // RaisedBackgroundColor #FFEAF1FA, NavigationSelectionColor #FFDCEBFF,
+    // MutedForegroundColor #FF5F7086, Success #FF16883F, Danger #FFB4232C.
+    // All text is black, as Chuck decided. Black on Accent #0066CC
+    // would be unreadable, so Accent is used only as the selected
+    // key border, never as a background under black text. Selected
+    // background is NavigationSelection #FFDCEBFF, black text on it
+    // is readable. Normal keys are Card white, borders BorderColor.
+    // Layout follows Chuck's pick: default variant, keys a little
+    // less wide than default, backspace / enter a little smaller
+    // (not super thin, text still fits), emojis / arrows / Move at
+    // the bottom, caps / shift / space row not squished.
     // Layout follows Chuck's pick: default variant, keys a little less
     // wide than default, backspace / enter a little smaller (not super
     // thin, text still fits), emojis / arrows / Hide at the bottom,
@@ -30,12 +48,20 @@ namespace DS4WinWPF.DS4Forms
         private List<Button> emojiButtons = new List<Button>();
         private StackPanel mainPanel;
         private StackPanel emojiPanel;
+        private StackPanel symbolsPanel;
+        private List<Button> symbolsButtons = new List<Button>();
+        private int lastMovePos = -1;
 
         public OnScreenKeyboardWindow(int device)
         {
             InitializeComponent();
             deviceNum = device;
             BuildKeys();
+            // Overlay starts at the bottom center, over every window.
+            WindowStartupLocation = WindowStartupLocation.Manual;
+            Left = (SystemParameters.WorkArea.Width - Width) / 2;
+            Top = SystemParameters.WorkArea.Height - Height - 20;
+            lastMovePos = 0;
             OnScreenKeyboardState.SelectionChanged += OnSelectionChanged;
             Closed += (s, e) =>
             {
@@ -93,19 +119,24 @@ namespace DS4WinWPF.DS4Forms
             {
                 case OnScreenKeyboardState.KeyKind.Backspace:
                 case OnScreenKeyboardState.KeyKind.Enter:
+                    return 72;
+                case OnScreenKeyboardState.KeyKind.Tab:
                     return 68;
                 case OnScreenKeyboardState.KeyKind.Caps:
                 case OnScreenKeyboardState.KeyKind.ShiftHold:
-                    return 90;
+                    return 84;
                 case OnScreenKeyboardState.KeyKind.Space:
                     return 260;
                 case OnScreenKeyboardState.KeyKind.EmojiToggle:
-                case OnScreenKeyboardState.KeyKind.Hide:
-                    return 68;
+                case OnScreenKeyboardState.KeyKind.SymbolsToggle:
+                    return 56;
+                case OnScreenKeyboardState.KeyKind.Move:
+                    return 96;
                 case OnScreenKeyboardState.KeyKind.Emoji:
+                case OnScreenKeyboardState.KeyKind.Symbol:
                     return 56;
                 default:
-                    return 52;
+                    return 48;
             }
         }
 
@@ -137,6 +168,16 @@ namespace DS4WinWPF.DS4Forms
                 emojiPanel.Children.Add(btn);
             }
             keysPanel.Children.Add(emojiPanel);
+            symbolsPanel = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, Visibility = Visibility.Collapsed };
+            foreach (var key in OnScreenKeyboardState.SymbolsRow)
+            {
+                var btn = MakeButton(key, WidthForKind(key.Kind));
+                btn.FontSize = 20;
+                btn.Content = key.Text;
+                symbolsButtons.Add(btn);
+                symbolsPanel.Children.Add(btn);
+            }
+            keysPanel.Children.Add(symbolsPanel);
         }
 
         private Button MakeButton(OnScreenKeyboardState.KeyDef key, double width)
@@ -149,6 +190,10 @@ namespace DS4WinWPF.DS4Forms
                 Margin = new Thickness(2),
                 FontSize = 13,
                 Tag = key,
+                Background = Brushes.White,
+                Foreground = Brushes.Black,
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0xC8, 0xC8, 0xC8)),
+                BorderThickness = new Thickness(1),
             };
             btn.Click += (s, e) => OnButtonClicked(key);
             return btn;
@@ -163,6 +208,23 @@ namespace DS4WinWPF.DS4Forms
             {
                 case OnScreenKeyboardState.KeyKind.Hide:
                     OnScreenKeyboardState.Close(deviceNum);
+                    break;
+                case OnScreenKeyboardState.KeyKind.Move:
+                    // Mouse click on Move cycles the overlay position.
+                    // Controller X on Move with Shift held closes, like
+                    // the old Hide button; see Mapping.
+                    OnScreenKeyboardState.CycleMovePosition(deviceNum);
+                    break;
+                case OnScreenKeyboardState.KeyKind.Tab:
+                    Mapping.TapMultiKeys(new List<ushort> { 0x09 }, DS4KeyType.None, false);
+                    OnScreenKeyboardState.ClearShiftLatch(deviceNum);
+                    break;
+                case OnScreenKeyboardState.KeyKind.SymbolsToggle:
+                    OnScreenKeyboardState.ToggleSymbolsPanel(deviceNum);
+                    break;
+                case OnScreenKeyboardState.KeyKind.Symbol:
+                    OnScreenKeyboardState.SendUnicodeText(key.Text);
+                    OnScreenKeyboardState.ToggleSymbolsPanel(deviceNum);
                     break;
                 case OnScreenKeyboardState.KeyKind.Caps:
                     OnScreenKeyboardState.ToggleCaps(deviceNum);
@@ -214,19 +276,65 @@ namespace DS4WinWPF.DS4Forms
             if (!OnScreenKeyboardState.IsActive(deviceNum))
                 return;
             bool emoji = OnScreenKeyboardState.EmojiPanelActive(deviceNum);
-            mainPanel.Visibility = emoji ? Visibility.Collapsed : Visibility.Visible;
+            bool symbols = OnScreenKeyboardState.SymbolsPanelActive(deviceNum);
+            mainPanel.Visibility = (!emoji && !symbols) ? Visibility.Visible : Visibility.Collapsed;
             emojiPanel.Visibility = emoji ? Visibility.Visible : Visibility.Collapsed;
+            symbolsPanel.Visibility = symbols ? Visibility.Visible : Visibility.Collapsed;
+            // Move position: 0 bottom, 1 center, 2 top, over the whole screen.
+            int mp = OnScreenKeyboardState.MovePosition(deviceNum);
+            if (mp != lastMovePos)
+            {
+                lastMovePos = mp;
+                double waW = SystemParameters.WorkArea.Width;
+                double waH = SystemParameters.WorkArea.Height;
+                Left = (waW - Width) / 2;
+                Top = mp == 1 ? (waH - Height) / 2 : (mp == 2 ? 20 : waH - Height - 20);
+            }
             // Clear all highlights, then highlight the current key.
             foreach (var row in rowButtons)
                 foreach (var b in row)
-                    b.Background = SystemColors.ControlBrush;
+                {
+                    b.Background = Brushes.White;
+                    b.Foreground = Brushes.Black;
+                    b.BorderBrush = new SolidColorBrush(Color.FromRgb(0xC8, 0xC8, 0xC8));
+                    b.BorderThickness = new Thickness(1);
+                }
             foreach (var b in emojiButtons)
-                b.Background = SystemColors.ControlBrush;
-            if (emoji)
+            {
+                b.Background = Brushes.White;
+                b.Foreground = Brushes.Black;
+                b.BorderBrush = new SolidColorBrush(Color.FromRgb(0xC8, 0xC8, 0xC8));
+                b.BorderThickness = new Thickness(1);
+            }
+            foreach (var b in symbolsButtons)
+            {
+                b.Background = Brushes.White;
+                b.Foreground = Brushes.Black;
+                b.BorderBrush = new SolidColorBrush(Color.FromRgb(0xC8, 0xC8, 0xC8));
+                b.BorderThickness = new Thickness(1);
+            }
+            if (symbols)
+            {
+                int c = OnScreenKeyboardState.SelectedCol(deviceNum);
+                if (c >= 0 && c < symbolsButtons.Count)
+                {
+                    symbolsButtons[c].Background = new SolidColorBrush(Color.FromRgb(0xDC, 0xEB, 0xFF));
+                    symbolsButtons[c].Foreground = Brushes.Black;
+                    symbolsButtons[c].BorderBrush = new SolidColorBrush(Color.FromRgb(0x00, 0x66, 0xCC));
+                    symbolsButtons[c].BorderThickness = new Thickness(2);
+                }
+                statusText.Text = "Symbols panel: move with joystick / D-pad, X to type a symbol, Circle to close.";
+            }
+            else if (emoji)
             {
                 int c = OnScreenKeyboardState.SelectedCol(deviceNum);
                 if (c >= 0 && c < emojiButtons.Count)
-                    emojiButtons[c].Background = SystemColors.HighlightBrush;
+                {
+                    emojiButtons[c].Background = new SolidColorBrush(Color.FromRgb(0xDC, 0xEB, 0xFF));
+                    emojiButtons[c].Foreground = Brushes.Black;
+                    emojiButtons[c].BorderBrush = new SolidColorBrush(Color.FromRgb(0x00, 0x66, 0xCC));
+                    emojiButtons[c].BorderThickness = new Thickness(2);
+                }
                 statusText.Text = "Emoji panel: move with joystick / D-pad, X to type an emoji, Circle to close.";
             }
             else
@@ -234,7 +342,12 @@ namespace DS4WinWPF.DS4Forms
                 int r = OnScreenKeyboardState.SelectedRow(deviceNum);
                 int c = OnScreenKeyboardState.SelectedCol(deviceNum);
                 if (r >= 0 && r < rowButtons.Count && c >= 0 && c < rowButtons[r].Count)
-                    rowButtons[r][c].Background = SystemColors.HighlightBrush;
+                {
+                    rowButtons[r][c].Background = new SolidColorBrush(Color.FromRgb(0xDC, 0xEB, 0xFF));
+                    rowButtons[r][c].Foreground = Brushes.Black;
+                    rowButtons[r][c].BorderBrush = new SolidColorBrush(Color.FromRgb(0x00, 0x66, 0xCC));
+                    rowButtons[r][c].BorderThickness = new Thickness(2);
+                }
                 var cur = OnScreenKeyboardState.CurrentKey(deviceNum);
                 statusText.Text = $"Selected: {cur.Label} | Caps: {(OnScreenKeyboardState.CapsOn(deviceNum) ? "On" : "Off")} | Shift: hold L2, or select Shift for one key | X select, Circle close, Square backspace, L3 caps.";
             }
