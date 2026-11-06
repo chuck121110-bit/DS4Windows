@@ -1,4 +1,4 @@
-﻿/*
+/*
 DS4Windows
 Copyright (C) 2023  Travis Nickles
 
@@ -220,6 +220,21 @@ namespace DS4Windows
         private double gyro_accel_magnitude = 1.0f;
         private Stopwatch gyroAverageTimer = new Stopwatch();
 
+        // DS4 GYRO DRIFT FIX 2026-11-05: the factory-bias offset is only
+        // averaged once, in the first 5 seconds after connect, and then frozen.
+        // If the controller is moving in those 5 seconds the average is wrong,
+        // and as a cold controller warms up its bias drifts anyway, so the
+        // leftover bias looks like constant rotation and the camera drifts.
+        // These fields track a slow bias correction that only runs while the
+        // controller is genuinely still, so it can never eat real aim input.
+        private DateTime gyroStillSince = DateTime.MinValue;
+        private double gyroStillAccumX = 0.0;
+        private double gyroStillAccumY = 0.0;
+        private double gyroStillAccumZ = 0.0;
+        // Raw gyro units: GYRO_RES_IN_DEG_SEC is 16, so 48 raw = 3 deg/s.
+        private const int GyroStillThresholdRaw = 48;
+        private const int GyroStillMs = 1500;
+
         private class SimulatePitchRoll
         {
             private const int SAMPLE_WINDOW = 4;
@@ -433,6 +448,7 @@ namespace DS4Windows
                 currentYaw -= gyro_offset_x;
                 currentPitch -= gyro_offset_y;
                 currentRoll -= gyro_offset_z;
+                UpdateStillGyroBias(ref currentYaw, ref currentPitch, ref currentRoll);
 
                 SixAxisEventArgs args = null;
                 if (AccelX != 0 || AccelY != 0 || AccelZ != 0)
@@ -524,12 +540,69 @@ namespace DS4Windows
             }
         }
 
+        // DS4 GYRO DRIFT FIX 2026-11-05: slow bias correction while still.
+        // Called with the already offset-corrected gyro values. If every axis
+        // stays under 3 deg/s for 1.5 seconds straight, the controller is
+        // still, so any remaining reading is bias, not motion, and the offset
+        // is nudged toward it a little per sample. Any real motion resets the
+        // still timer at once, so slow aiming is never eaten. While the
+        // 5-second start-up calibration is still running this does nothing.
+        private void UpdateStillGyroBias(ref int currentYaw, ref int currentPitch, ref int currentRoll)
+        {
+            if (gyroAverageTimer.IsRunning)
+            {
+                gyroStillSince = DateTime.MinValue;
+                gyroStillAccumX = gyroStillAccumY = gyroStillAccumZ = 0.0;
+                return;
+            }
+
+            if (Math.Abs(currentYaw) < GyroStillThresholdRaw &&
+                Math.Abs(currentPitch) < GyroStillThresholdRaw &&
+                Math.Abs(currentRoll) < GyroStillThresholdRaw)
+            {
+                if (gyroStillSince == DateTime.MinValue)
+                {
+                    gyroStillSince = DateTime.UtcNow;
+                    return;
+                }
+
+                if ((DateTime.UtcNow - gyroStillSince).TotalMilliseconds < GyroStillMs)
+                    return;
+
+                gyroStillAccumX += currentYaw * 0.02;
+                gyroStillAccumY += currentPitch * 0.02;
+                gyroStillAccumZ += currentRoll * 0.02;
+
+                int dx = (int)gyroStillAccumX;
+                if (dx != 0) { gyro_offset_x += dx; gyroStillAccumX -= dx; currentYaw -= dx; }
+                int dy = (int)gyroStillAccumY;
+                if (dy != 0) { gyro_offset_y += dy; gyroStillAccumY -= dy; currentPitch -= dy; }
+                int dz = (int)gyroStillAccumZ;
+                if (dz != 0) { gyro_offset_z += dz; gyroStillAccumZ -= dz; currentRoll -= dz; }
+            }
+            else
+            {
+                gyroStillSince = DateTime.MinValue;
+                gyroStillAccumX = gyroStillAccumY = gyroStillAccumZ = 0.0;
+            }
+        }
+
         private unsafe void CalcSensorCamples(ref int currentYaw, ref int currentPitch, ref int currentRoll, ref int AccelX, ref int AccelY, ref int AccelZ)
         {
             unchecked
             {
                 double accelMag = Math.Sqrt(AccelX * AccelX + AccelY * AccelY + AccelZ * AccelZ);
-                PushSensorSamples(currentYaw, currentPitch, currentRoll, (float)accelMag);
+                // DS4 GYRO DRIFT FIX 2026-11-05: do not let real motion into
+                // the 5-second start-up average. If Chuck picks the controller
+                // up right after connecting, those moving samples used to
+                // corrupt the bias offset for the whole session. Still samples
+                // only; if none arrive in 5 seconds the offset stays 0 and the
+                // still-adaptation below fixes it later instead.
+                if (Math.Abs(currentYaw) < 80 && Math.Abs(currentPitch) < 80 &&
+                    Math.Abs(currentRoll) < 80)
+                {
+                    PushSensorSamples(currentYaw, currentPitch, currentRoll, (float)accelMag);
+                }
                 if (gyroAverageTimer.ElapsedMilliseconds > 5000L)
                 {
                     gyroAverageTimer.Stop();

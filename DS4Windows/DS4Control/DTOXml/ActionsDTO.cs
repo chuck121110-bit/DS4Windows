@@ -1,4 +1,4 @@
-﻿/*
+/*
 DS4Windows
 Copyright (C) 2023  Travis Nickles
 
@@ -85,6 +85,9 @@ namespace DS4WinWPF.DS4Control.DTOXml
                     case SpecialAction.ActionTypeId.MultiAction:
                     case SpecialAction.ActionTypeId.SASteeringWheelEmulationCalibrate:
                     case SpecialAction.ActionTypeId.GyroCalibrate:
+                    case SpecialAction.ActionTypeId.SystemAction:
+                    case SpecialAction.ActionTypeId.SwitchPrograms:
+                    case SpecialAction.ActionTypeId.OnScreenKeyboard:
                         actionSerializer.Name = action.name;
                         actionSerializer.Trigger = action.controls;
                         actionSerializer.TypeString = action.type;
@@ -203,6 +206,21 @@ namespace DS4WinWPF.DS4Control.DTOXml
                         double.TryParse(actionSerializer.Details, System.Globalization.NumberStyles.Float, Global.configFileDecimalCulture, out var delay);
                         tempAction = new SpecialAction(actionSerializer.Name, actionSerializer.Trigger,
                             actionSerializer.TypeString, actionSerializer.Details, delay);
+                        break;
+                    case "System":
+                        tempAction = new SpecialAction(actionSerializer.Name,
+                            actionSerializer.Trigger, actionSerializer.TypeString,
+                            actionSerializer.Details, 0, actionSerializer.Extras);
+                        break;
+                    case "SwitchPrograms":
+                        tempAction = new SpecialAction(actionSerializer.Name,
+                            actionSerializer.Trigger, actionSerializer.TypeString,
+                            actionSerializer.Details);
+                        break;
+                    case "OnScreenKeyboard":
+                        tempAction = new SpecialAction(actionSerializer.Name,
+                            actionSerializer.Trigger, actionSerializer.TypeString,
+                            actionSerializer.Details);
                         break;
                     default:
                         break;

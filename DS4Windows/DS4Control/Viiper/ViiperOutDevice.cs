@@ -556,6 +556,133 @@ namespace DS4Windows
         private long physicalControllerBindingRevision;
         private readonly byte[] lastR2TriggerFeedback = new byte[DualSenseTriggerEffectLength];
         private readonly byte[] lastL2TriggerFeedback = new byte[DualSenseTriggerEffectLength];
+        // DS4 FIX (2026-11-04, Chuck: advanced triggers keep happening,
+        // like rainbow kept animating): DualSense hardware loops a
+        // trigger mode until a None effect arrives. Track the last
+        // game trigger feedback time, so a looping effect can be
+        // cleared once when the game stops talking, on disconnect,
+        // and on profile switch, instead of running forever.
+        private DateTime lastDualSenseTriggerFeedbackUtc = DateTime.MinValue;
+        private DS4Device lastTriggerDevice;
+        private int lastTriggerDeviceIndex = -1;
+        private bool lastTriggerEffectNonZero;
+        private long lastTriggerProfileRevision = -1;
+        private byte lastNativeLeftTriggerMode = 0xFF;
+        private byte lastNativeRightTriggerMode = 0xFF;
+        private bool gameTriggerBlockedCleared;
+        private System.Threading.Timer triggerIdleTimer;
+        private readonly object triggerIdleLock = new object();
+
+        private static byte[] TriggerFeedbackSlice(byte[] feedback, int offset)
+        {
+            byte[] raw = new byte[DualSenseTriggerEffectLength];
+            if (feedback != null && offset >= 0 &&
+                offset + DualSenseTriggerEffectLength <= feedback.Length)
+                Array.Copy(feedback, offset, raw, 0, DualSenseTriggerEffectLength);
+            return raw;
+        }
+
+        private static bool IsTriggerFeedbackNonZero(byte[] feedback, int r2Offset, int l2Offset)
+        {
+            if (feedback == null) return false;
+            for (int i = 0; i < DualSenseTriggerEffectLength; i++)
+            {
+                if (r2Offset + i < feedback.Length && feedback[r2Offset + i] != 0) return true;
+                if (l2Offset + i < feedback.Length && feedback[l2Offset + i] != 0) return true;
+            }
+            return false;
+        }
+
+        // DS4 FIX (2026-11-05, Chuck: adaptive triggers keep enabling,
+        // controller infinitely rumbling): Fortnite sends game trigger
+        // feedback every frame through VIIPER, and Xbox impulse is
+        // converted to adaptive triggers, even though his profile
+        // L2/R2 effects are None. RumbleBoost 0 only stops main motors;
+        // trigger motors and HD haptics are a different lane, which is
+        // why the rumble log is silent while the controller still buzzes.
+        // When both adaptive-trigger profile flags are off, game trigger
+        // feedback is blocked at every entry point, not just logged.
+        private static bool GameTriggerFeedbackBlocked(int deviceIndex)
+        {
+            if (deviceIndex < 0) return false;
+            bool adaptiveOff = deviceIndex < Global.Switch2DualSenseAdaptiveTriggersEnabled.Length &&
+                !Volatile.Read(ref Global.Switch2DualSenseAdaptiveTriggersEnabled[deviceIndex]);
+            bool impulseOff = deviceIndex < Global.XboxImpulseToAdaptiveTriggers.Length &&
+                !Volatile.Read(ref Global.XboxImpulseToAdaptiveTriggers[deviceIndex]);
+            return adaptiveOff && impulseOff;
+        }
+
+        private static void ZeroGameTriggerBlock(byte[] report, int rightOffset, int leftOffset, int flagsOffset)
+        {
+            if (report == null) return;
+            if (flagsOffset >= 0 && flagsOffset < report.Length)
+                report[flagsOffset] &= unchecked((byte)~0x0C);
+            for (int i = 0; i < DualSenseTriggerEffectLength; i++)
+            {
+                if (rightOffset + i < report.Length) report[rightOffset + i] = 0;
+                if (leftOffset + i < report.Length) report[leftOffset + i] = 0;
+            }
+        }
+
+        private void NoteTriggerFeedback(DS4Device device, int deviceIndex, bool nonZero)
+        {
+            lock (triggerIdleLock)
+            {
+                lastDualSenseTriggerFeedbackUtc = DateTime.UtcNow;
+                lastTriggerDevice = device;
+                lastTriggerDeviceIndex = deviceIndex;
+                lastTriggerEffectNonZero = nonZero;
+                if (triggerIdleTimer == null)
+                    triggerIdleTimer = new System.Threading.Timer(TriggerIdleTimerCallback, null, 500, 500);
+            }
+        }
+
+        private void TriggerIdleTimerCallback(object state)
+        {
+            DS4Device device;
+            int deviceIndex;
+            DateTime last;
+            bool nonZero;
+            lock (triggerIdleLock)
+            {
+                device = lastTriggerDevice;
+                deviceIndex = lastTriggerDeviceIndex;
+                last = lastDualSenseTriggerFeedbackUtc;
+                nonZero = lastTriggerEffectNonZero;
+            }
+            if (!nonZero || device == null || last == DateTime.MinValue) return;
+            if ((DateTime.UtcNow - last).TotalSeconds < 2.0) return;
+            ClearTriggerFeedback(device, deviceIndex, "idle-2s-no-game-trigger-feedback");
+        }
+
+        private void ClearTriggerFeedback(DS4Device device, int deviceIndex, string reason)
+        {
+            if (device == null) return;
+            lock (triggerIdleLock)
+            {
+                Array.Clear(lastR2TriggerFeedback, 0, lastR2TriggerFeedback.Length);
+                Array.Clear(lastL2TriggerFeedback, 0, lastL2TriggerFeedback.Length);
+                lastTriggerEffectNonZero = false;
+                lastNativeLeftTriggerMode = 0xFF;
+                lastNativeRightTriggerMode = 0xFF;
+            }
+            try
+            {
+                device.PrepareTriggerEffect(InputDevices.TriggerId.LeftTrigger,
+                    InputDevices.TriggerEffects.None,
+                    Global.L2OutputSettings[deviceIndex].TrigEffectSettings);
+                device.PrepareTriggerEffect(InputDevices.TriggerId.RightTrigger,
+                    InputDevices.TriggerEffects.None,
+                    Global.R2OutputSettings[deviceIndex].TrigEffectSettings);
+            }
+            catch { }
+            try { TriggerEffectLogger.LogClear(reason); } catch { }
+        }
+        // DS4 FIX (2026-11-04, Chuck: adaptive triggers keep running
+        // while the keyboard is open): true only while game feedback
+        // was suppressed for an open keyboard, so the next feedback
+        // frame after close is applied normally, not dropped.
+        private bool oskFeedbackSuppressed;
 
         private enum MicrophoneCodec : byte
         {
@@ -1122,6 +1249,10 @@ namespace DS4Windows
                 throw;
             }
             Interlocked.Increment(ref streamGeneration);
+            // 2026-11-02 numbered audio fixer, post-connect scan:
+            // 2 second background delay, then scan and fix any
+            // numbered Sony audio endpoints automatically.
+            NumberedAudioEndpointFixer.RunDelayedPostConnectScan("connect");
             if (UsesOrderedEgressScheduler())
             {
                 lock (orderedEgressLifecycleLock)
@@ -1326,6 +1457,7 @@ namespace DS4Windows
                     false);
             }
         }
+
 
         private ViiperDeviceStream CreateDeviceStream()
         {
@@ -1961,6 +2093,24 @@ namespace DS4Windows
 
         public override void Disconnect()
         {
+            // DS4 FIX (2026-11-04): a looping trigger effect must not
+            // survive a virtual device disconnect. Clear it once here,
+            // before teardown, and reset the last effect to zero.
+            try
+            {
+                DS4Device lastDev;
+                int lastIdx;
+                bool nonZero;
+                lock (triggerIdleLock)
+                {
+                    lastDev = lastTriggerDevice;
+                    lastIdx = lastTriggerDeviceIndex;
+                    nonZero = lastTriggerEffectNonZero;
+                }
+                if (lastDev != null && nonZero)
+                    ClearTriggerFeedback(lastDev, lastIdx, "disconnect");
+            }
+            catch { }
             // Invalidate producer admission before any worker generation or
             // stream teardown work. A callback which was paused after capture
             // can then neither stage into nor adopt a successor lifecycle.
@@ -6659,6 +6809,45 @@ namespace DS4Windows
             {
                 return;
             }
+            // DS4 FIX (2026-11-04, Chuck: adaptive triggers keep
+            // running / vibrating / shifting while the keyboard is
+            // open): game feedback (rumble, adaptive triggers, game
+            // lightbar, audio haptics) normally reaches the physical
+            // controller through this method even though mapped INPUT
+            // is neutralized while the keyboard is open. Drop game
+            // feedback while the keyboard is open, so L2 Shift and
+            // R2 Enter feel like plain triggers while typing, and
+            // let the next feedback frame after close apply normally
+            // (last trigger feedback is NOT updated here, so a changed
+            // effect is not lost, it is just delayed until close).
+            // This does not change the profile, and it does not stop
+            // a game that talks to the physical controller natively
+            // outside DS4/VIIPER, which DS4 cannot gate.
+            if (OnScreenKeyboardState.IsActive(deviceIndex))
+            {
+                if (!oskFeedbackSuppressed)
+                {
+                    try { Program.rootHub.SetDevRumble(device, 0, 0, deviceIndex); } catch { }
+                    try
+                    {
+                        device.PrepareTriggerEffect(InputDevices.TriggerId.LeftTrigger,
+                            InputDevices.TriggerEffects.None,
+                            Global.L2OutputSettings[deviceIndex].TrigEffectSettings);
+                        device.PrepareTriggerEffect(InputDevices.TriggerId.RightTrigger,
+                            InputDevices.TriggerEffects.None,
+                            Global.R2OutputSettings[deviceIndex].TrigEffectSettings);
+                    }
+                    catch { }
+                    oskFeedbackSuppressed = true;
+                    try { TriggerEffectLogger.LogNote("keyboard-open: game trigger feedback suppressed, None sent once, profile restore on close is None, no stale game effect is replayed on close, only a fresh frame after close can set a new effect"); } catch { }
+                }
+                return;
+            }
+            if (oskFeedbackSuppressed)
+            {
+                try { TriggerEffectLogger.LogNote("keyboard-close: suppression ended, profile restore is None, no stale game effect replayed on close"); } catch { }
+            }
+            oskFeedbackSuppressed = false;
             // A base virtual persona does not change the physical Edge's
             // interpretation of its configuration bits. Apply the same atomic
             // guard to that cross-model path before any scalar fallback.
@@ -6746,6 +6935,13 @@ namespace DS4Windows
                             ApplyLightbar(device, DS4LightBar.BatteryHoldColor[deviceIndex].red, DS4LightBar.BatteryHoldColor[deviceIndex].green, DS4LightBar.BatteryHoldColor[deviceIndex].blue, 0, 0);
                             break;
                         }
+                        if (deviceIndex >= 0 && deviceIndex < DS4LightBar.ConnectHoldUntil.Length &&
+                            DS4LightBar.ConnectHoldUntil[deviceIndex] != DateTime.MinValue &&
+                            DateTime.UtcNow < DS4LightBar.ConnectHoldUntil[deviceIndex])
+                        {
+                            ApplyLightbar(device, DS4LightBar.ConnectHoldColor[deviceIndex].red, DS4LightBar.ConnectHoldColor[deviceIndex].green, DS4LightBar.ConnectHoldColor[deviceIndex].blue, 0, 0);
+                            break;
+                        }
                         if (ShouldApplyGameLightbar(deviceIndex))
                         {
                             ApplyLightbar(device, feedback[2], feedback[3],
@@ -6771,6 +6967,15 @@ namespace DS4Windows
                             if (feedbackLength >= 2)
                                 Program.rootHub.SetDevRumble(device, feedback[1], feedback[0], deviceIndex);
                             ApplyLightbar(device, DS4LightBar.BatteryHoldColor[deviceIndex].red, DS4LightBar.BatteryHoldColor[deviceIndex].green, DS4LightBar.BatteryHoldColor[deviceIndex].blue, 0, 0);
+                            break;
+                        }
+                        if (deviceIndex >= 0 && deviceIndex < DS4LightBar.ConnectHoldUntil.Length &&
+                            DS4LightBar.ConnectHoldUntil[deviceIndex] != DateTime.MinValue &&
+                            DateTime.UtcNow < DS4LightBar.ConnectHoldUntil[deviceIndex])
+                        {
+                            if (feedbackLength >= 2)
+                                Program.rootHub.SetDevRumble(device, feedback[1], feedback[0], deviceIndex);
+                            ApplyLightbar(device, DS4LightBar.ConnectHoldColor[deviceIndex].red, DS4LightBar.ConnectHoldColor[deviceIndex].green, DS4LightBar.ConnectHoldColor[deviceIndex].blue, 0, 0);
                             break;
                         }
                         bool nativeForwardingAllowed = IsNativeDualSenseFeedbackCompatible(device);
@@ -8728,14 +8933,38 @@ namespace DS4Windows
                 return;
             }
 
+            if (GameTriggerFeedbackBlocked(deviceIndex))
+            {
+                if (!gameTriggerBlockedCleared)
+                {
+                    gameTriggerBlockedCleared = true;
+                    ClearTriggerFeedback(device, deviceIndex, "game-trigger-blocked");
+                }
+                return;
+            }
+            gameTriggerBlockedCleared = false;
+
             int r2Offset = DualSenseTriggerFeedbackOffset;
             int l2Offset = DualSenseTriggerFeedbackOffset + DualSenseTriggerEffectLength;
             TriggerLabProfileSettings triggerLab = TriggerLabForDevice(deviceIndex);
+            // DS4 FIX (2026-11-04): on profile switch, clear the old
+            // profile's looping effect once, before the new frame
+            // applies, so it cannot survive the switch.
+            try
+            {
+                long rev = Global.ReadProfileSwitchRevision(deviceIndex);
+                if (lastTriggerProfileRevision != -1 && rev != lastTriggerProfileRevision)
+                    ClearTriggerFeedback(device, deviceIndex, "profile-switch");
+                lastTriggerProfileRevision = rev;
+            }
+            catch { }
+            NoteTriggerFeedback(device, deviceIndex, IsTriggerFeedbackNonZero(feedback, r2Offset, l2Offset));
             bool r2Changed = !TriggerFeedbackEquals(feedback, r2Offset, lastR2TriggerFeedback);
             bool l2Changed = !TriggerFeedbackEquals(feedback, l2Offset, lastL2TriggerFeedback);
 
             if (r2Changed)
             {
+                try { TriggerEffectLogger.LogEffect("game-native", "RightTrigger", feedback[r2Offset], TriggerFeedbackSlice(feedback, r2Offset), "Viiper extended feedback, TriggerLab override if active"); } catch { }
                 CopyTriggerFeedback(feedback, r2Offset, lastR2TriggerFeedback);
                 if (triggerLab?.HasActiveOverride == true && triggerLab.RightActive)
                     TriggerLabEffectEncoder.ApplyToDevice(dualSenseDevice,
@@ -8746,6 +8975,7 @@ namespace DS4Windows
 
             if (l2Changed)
             {
+                try { TriggerEffectLogger.LogEffect("game-native", "LeftTrigger", feedback[l2Offset], TriggerFeedbackSlice(feedback, l2Offset), "Viiper extended feedback, TriggerLab override if active"); } catch { }
                 CopyTriggerFeedback(feedback, l2Offset, lastL2TriggerFeedback);
                 if (triggerLab?.HasActiveOverride == true && triggerLab.LeftActive)
                     TriggerLabEffectEncoder.ApplyToDevice(dualSenseDevice,
@@ -8791,6 +9021,29 @@ namespace DS4Windows
                 out long nativeOutputRevision, feedback, DualSenseNativeOutputReportOffset, triggerLabValidity);
             if (applied)
             {
+                // DS4 FIX (2026-11-04): the native DualSense output
+                // report path bypasses ApplyDualSenseTriggerFeedback,
+                // so log and track its trigger modes here too, or a
+                // looping native effect would be invisible to the
+                // idle clear. Native trigger modes are at offsets
+                // 11 (left) and 22 (right) in the native report.
+                try
+                {
+                    byte nativeL = nativeOutputScratch.Length > 11 ? nativeOutputScratch[11] : (byte)0;
+                    byte nativeR = nativeOutputScratch.Length > 22 ? nativeOutputScratch[22] : (byte)0;
+                    NoteTriggerFeedback(device, deviceIndex, nativeL != 0 || nativeR != 0);
+                    if (nativeL != lastNativeLeftTriggerMode)
+                    {
+                        TriggerEffectLogger.LogEffect("game-native-report", "LeftTrigger", nativeL, new byte[] { nativeL }, "native DualSense output report, offset 11");
+                        lastNativeLeftTriggerMode = nativeL;
+                    }
+                    if (nativeR != lastNativeRightTriggerMode)
+                    {
+                        TriggerEffectLogger.LogEffect("game-native-report", "RightTrigger", nativeR, new byte[] { nativeR }, "native DualSense output report, offset 22");
+                        lastNativeRightTriggerMode = nativeR;
+                    }
+                }
+                catch { }
                 TraceNativeGameOutput(feedback,
                     DualSenseNativeOutputReportOffset,
                     nativeOutputRevision, dualSenseDevice,
@@ -8821,8 +9074,14 @@ namespace DS4Windows
             Buffer.BlockCopy(feedback, DualSenseNativeOutputReportOffset,
                 destination, 0, DualSenseNativeOutputReportLength);
 
-            return ApplyTriggerLabNativeOverrides(destination, 1, 11, 22,
+            byte triggerLabValidity = ApplyTriggerLabNativeOverrides(destination, 1, 11, 22,
                 TriggerLabForDevice(deviceIndex), feedback[1], feedback[0]);
+            if (GameTriggerFeedbackBlocked(deviceIndex))
+            {
+                ZeroGameTriggerBlock(destination, 11, 22, 1);
+                triggerLabValidity &= unchecked((byte)~0x0C);
+            }
+            return triggerLabValidity;
         }
 
         internal static void CopyPreparedNativeDualSenseStateIntoCombinedCarrier(
@@ -8912,6 +9171,10 @@ namespace DS4Windows
                     stateOffset + 10, stateOffset + 21,
                     TriggerLabForDevice(deviceIndex), feedback[1],
                     feedback[0]);
+                if (GameTriggerFeedbackBlocked(deviceIndex))
+                {
+                    ZeroGameTriggerBlock(report, stateOffset + 10, stateOffset + 21, stateOffset);
+                }
             }
 
             bool publishedImmediately = dualSenseDevice.
@@ -10133,6 +10396,10 @@ namespace DS4Windows
                 DS4LightBar.BatteryHoldUntil[deviceIndex] != DateTime.MinValue &&
                 DateTime.UtcNow < DS4LightBar.BatteryHoldUntil[deviceIndex])
                 return false;
+            if (deviceIndex >= 0 && deviceIndex < DS4LightBar.ConnectHoldUntil.Length &&
+                DS4LightBar.ConnectHoldUntil[deviceIndex] != DateTime.MinValue &&
+                DateTime.UtcNow < DS4LightBar.ConnectHoldUntil[deviceIndex])
+                return false;
             return deviceIndex >= 0 &&
                 deviceIndex < Global.TEST_PROFILE_ITEM_COUNT &&
                 Global.getLightbarSettingsInfo(deviceIndex).mode ==
@@ -10726,6 +10993,16 @@ namespace DS4Windows
         {
             ArgumentNullException.ThrowIfNull(createDevice);
             ViiperUsbipPortManager.DetachStaleLocalViiperPorts();
+            // 2026-11-02 follow-up: also clean explicitly here, right
+            // before bus/create, so ghosts are removed before a new
+            // VIIPER device is imported on every creation, including
+            // profile switches mid-session, not only at DS4 startup.
+            // This never throws, so it cannot break input.
+            DualSenseAudioEndpointCleanup.CleanupStaleDualSenseAudioDevices();
+            // 2026-11-02 numbered audio fixer, pre-creation scan:
+            // scan what the next device will be named, remove plain
+            // Sony ghosts first, so it does not become numbered.
+            NumberedAudioEndpointFixer.RunPreCreationScan();
 
             ViiperBusCreateResponse bus = SendRequest<ViiperBusCreateResponse>(
                 "bus/create", "0");
@@ -11423,6 +11700,18 @@ namespace DS4Windows
                 },
                 port => DetachPort(port, "stale local VIIPER controller import"),
                 Thread.Sleep);
+            // 2026-11-01 DualSense audio name fix: usbip detach alone
+            // leaves the stale USB audio device and its endpoints
+            // registered, so the next import is named "2 - DualSense".
+            // Remove stale non-present USB VID_054C PID_0CE6 MI_00
+            // audio devices, and any orphaned non-active DualSense
+            // endpoint registry keys, BEFORE the next virtual device
+            // is imported, so it gets the plain name. This runs at
+            // DS4 startup and at the start of every VIIPER attach,
+            // and it never throws, so it cannot break input.
+            // It never removes a present device, a Bluetooth device,
+            // or a HID/composite function.
+            DualSenseAudioEndpointCleanup.CleanupStaleDualSenseAudioDevices();
             startupPortRecoveryCompleted = true;
         }
 
@@ -13092,7 +13381,7 @@ namespace DS4Windows
             if (state.R3) buttons |= 0x0080;
             if (state.L1) buttons |= 0x0100;
             if (state.R1) buttons |= 0x0200;
-            if (state.PS) buttons |= 0x0400;
+            // DS4 PS SUPPRESS 2026-11-04: PS is DS4-internal only, never sent to games/Steam. Was: if (state.PS) buttons |= 0x0400; // Xbox360 Guide
             if (state.Cross) buttons |= 0x1000;
             if (state.Circle) buttons |= 0x2000;
             if (state.Square) buttons |= 0x4000;
@@ -13367,7 +13656,7 @@ namespace DS4Windows
             if (state.Options) buttons |= 0x2000;
             if (state.L3) buttons |= 0x4000;
             if (state.R3) buttons |= 0x8000;
-            if (state.PS) buttons |= 0x0001;
+            // DS4 PS SUPPRESS 2026-11-04: PS is DS4-internal only, never sent to games/Steam. Was: if (state.PS) buttons |= 0x0001; // DualShock4 PS
             // The mapper owns click passthrough; TouchButton is the physical observation.
             if (state.OutputTouchButton) buttons |= 0x0002;
             return buttons;
@@ -13388,7 +13677,7 @@ namespace DS4Windows
             if (state.Options) buttons |= 0x00002000;
             if (state.L3) buttons |= 0x00004000;
             if (state.R3) buttons |= 0x00008000;
-            if (state.PS) buttons |= 0x00010000;
+            // DS4 PS SUPPRESS 2026-11-04: PS is DS4-internal only, never sent to games/Steam. Was: if (state.PS) buttons |= 0x00010000; // DualSense PS (Steam Guide)
             // The mapper owns click passthrough; TouchButton is the physical observation.
             if (state.OutputTouchButton) buttons |= 0x00020000;
             if (state.Mute) buttons |= 0x00040000;
@@ -13418,7 +13707,7 @@ namespace DS4Windows
             if (state.L2Btn || state.L2 > 0) buttons |= 1u << 13;
             if (state.Share) buttons |= 1u << 14;
             if (state.L3) buttons |= 1u << 15;
-            if (state.PS) buttons |= 1u << 16;
+            // DS4 PS SUPPRESS 2026-11-04: PS is DS4-internal only, never sent to games/Steam. Was: if (state.PS) buttons |= 1u << 16; // Switch2 Guide
             if (state.Capture) buttons |= 1u << 17;
             if (state.FnR || state.BRP || state.SideR) buttons |= 1u << 18;
             if (state.FnL || state.BLP || state.SideL) buttons |= 1u << 19;

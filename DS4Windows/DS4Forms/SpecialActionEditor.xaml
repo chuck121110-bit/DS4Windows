@@ -1,4 +1,4 @@
-﻿<UserControl x:Class="DS4WinWPF.DS4Forms.SpecialActionEditor"
+<UserControl x:Class="DS4WinWPF.DS4Forms.SpecialActionEditor"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
@@ -55,6 +55,9 @@
                         <ComboBoxItem Content="{lex:Loc SpecialActionEdit.MultiAction}" />
                         <ComboBoxItem Content="{lex:Loc SpecialActionEdit.SixAxisWheelCalib}" />
                         <ComboBoxItem Content="{lex:Loc SpecialActionEdit.CalibrateGyro}" />
+                        <ComboBoxItem Content="System Action" />
+                        <ComboBoxItem Content="Switch Programs" />
+                        <ComboBoxItem Content="On-Screen Keyboard" />
                     </ComboBox>
 
                     <TabControl x:Name="actionTypeTabControl" SelectedIndex="{Binding ActionTypeIndex}" BorderBrush="{x:Null}">
@@ -130,6 +133,7 @@
                             <StackPanel Margin="{StaticResource spaceMargin}">
                                 <Button x:Name="pressKeySelectBtn" Content="{Binding DescribeText,FallbackValue={lex:Loc SpecialActionEdit.SelectKey}}"
                                         Margin="{StaticResource spaceMargin}" Click="PressKeySelectBtn_Click" />
+                                <CheckBox Content="Press keys one after another (toggle actions only; held actions press all at once)" Margin="{StaticResource spaceMargin}" IsChecked="{Binding Sequence}" />
                                 <Button x:Name="pressKeyToggleTriggerBtn" Content="{lex:Loc SpecialActionEdit.SetUnloadTrigger}"
                                         Tag="{Binding UnloadError,ValidatesOnNotifyDataErrors=True}"
                                         Visibility="{Binding ShowToggleControls}"
@@ -214,6 +218,37 @@
                                 <Label Content="{lex:Loc HoldFor}" ContentStringFormat="{}{0} "></Label>
                                 <xctk:DecimalUpDown Value="{Binding HoldInterval}" Width="60" Minimum="0" Maximum="60" FormatString= "F2" Increment="0.5" />
                                 <Label Content="secs" />
+                            </StackPanel>
+                        </TabItem>
+                        <TabItem x:Name="systemActTab" Header="System Action">
+                            <StackPanel Margin="{StaticResource spaceMargin}">
+                                <ComboBox SelectedIndex="{Binding SystemActionIndex}" Margin="{StaticResource spaceMargin}">
+                                    <ComboBoxItem Content="Volume Up" />
+                                    <ComboBoxItem Content="Volume Down" />
+                                    <ComboBoxItem Content="Volume Mute" />
+                                    <ComboBoxItem Content="Cut" />
+                                    <ComboBoxItem Content="Undo" />
+                                    <ComboBoxItem Content="Redo" />
+                                    <ComboBoxItem Content="Select All" />
+                                    <ComboBoxItem Content="Save" />
+                                    <ComboBoxItem Content="Close Window" />
+                                    <ComboBoxItem Content="Custom Keys (pick in the key picker)" />
+                                </ComboBox>
+                                <Button x:Name="systemActionSelectKeysBtn" Content="Select Custom Keys (hold Ctrl and click multiple, then Done / Submit)"
+                                        Margin="{StaticResource spaceMargin}" Click="SystemActionSelectKeysBtn_Click" />
+                                <TextBlock Text="{Binding DescribeText}" Margin="{StaticResource spaceMargin}" TextWrapping="Wrap" />
+                                <TextBlock Text="System actions run through DS4 only, no Steam needed. Custom keys are picked in the key picker, not by pressing them physically." Margin="{StaticResource spaceMargin}" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </TabItem>
+                        <TabItem x:Name="switchProgTab" Header="Switch Programs">
+                            <StackPanel Margin="{StaticResource spaceMargin}">
+                                <TextBlock Text="Holds Alt-Tab: Alt goes down, Tab taps once, and Alt stays down until you click something, switch to / focus a window, press this action again, press Esc, or 30 seconds pass (safety timeout). Cycle Programs is unchanged." Margin="{StaticResource spaceMargin}" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </TabItem>
+                        <TabItem x:Name="oskActTab" Header="On-Screen Keyboard">
+                            <StackPanel Margin="{StaticResource spaceMargin}">
+                                <CheckBox Content="Type with the touchpad cursor" Margin="{StaticResource spaceMargin}" IsChecked="{Binding UseTouchpadCursor}" />
+                                <TextBlock Text="While the keyboard is open, mouse movement stays off and cannot be turned back on until the keyboard closes. Controls: joystick / D-pad navigate, L2 hold for shift, L3 for caps lock, Square for backspace, R2 for Enter, X to click a key, Circle to close, arrow keys, Hide button. DualTouch 6-row layout: function row, number row, Tab row, Caps row, Shift row, bottom row with Ctrl, Alt, Win, Space, arrows, Paste (Copy when Shift held), Hide. No Move button." Margin="{StaticResource spaceMargin}" TextWrapping="Wrap" />
                             </StackPanel>
                         </TabItem>
                     </TabControl>

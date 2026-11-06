@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -1944,6 +1944,7 @@ namespace DS4WinWPF.DS4Forms
                     Global.LoadProfile(device, false, App.rootHub, false);
                 }
                 profileNameTxt.Text = profile.Name;
+                LoadKeyboardSettings();
                 profileNameTxt.IsEnabled = false;
                 applyBtn.IsEnabled = true;
             }
@@ -2278,6 +2279,7 @@ namespace DS4WinWPF.DS4Forms
                 }
             }
 
+            SaveKeyboardSettings();
             bool saved = ApplyProfileStep(false);
             if (saved)
             {
@@ -2286,6 +2288,76 @@ namespace DS4WinWPF.DS4Forms
             }
         }
 
+
+        private string KbComboText(System.Windows.Controls.ComboBox box, string fallback)
+        {
+            try
+            {
+                if (box.SelectedItem is System.Windows.Controls.ComboBoxItem item && item.Content != null)
+                    return item.Content.ToString();
+                if (!string.IsNullOrEmpty(box.Text)) return box.Text;
+            }
+            catch { }
+            return fallback;
+        }
+
+        private void KbSelect(System.Windows.Controls.ComboBox box, string value, string fallback)
+        {
+            try
+            {
+                foreach (var it in box.Items)
+                {
+                    if (it is System.Windows.Controls.ComboBoxItem item && item.Content != null &&
+                        string.Equals(item.Content.ToString(), value, StringComparison.OrdinalIgnoreCase))
+                    { box.SelectedItem = it; return; }
+                }
+                box.Text = string.IsNullOrEmpty(value) ? fallback : value;
+            }
+            catch { }
+        }
+
+        private void LoadKeyboardSettings()
+        {
+            try
+            {
+                var s = KeyboardProfileSettings.Load(profileNameTxt.Text);
+                KbSelect(kbSkinCombo, s.Skin, "Gruvbox");
+                KbSelect(kbLayoutCombo, s.Layout, "QWERTY");
+                KbSelect(kbSizeCombo, s.Size, "medium");
+                KbSelect(kbTransparencyCombo, s.Transparency, "off");
+                kbSplitCheck.IsChecked = s.Split;
+                kbDiacriticsCheck.IsChecked = s.Diacritics;
+                kbLiftoffCheck.IsChecked = s.Liftoff;
+                kbKeySoundCheck.IsChecked = s.KeySound;
+                kbRumbleCheck.IsChecked = s.Rumble;
+                kbTouchSensBox.Text = s.TouchSensitivity.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+            catch { }
+        }
+
+        private void SaveKeyboardSettings()
+        {
+            try
+            {
+                var s = new KeyboardProfileSettings
+                {
+                    Skin = KbComboText(kbSkinCombo, "Gruvbox"),
+                    Layout = KbComboText(kbLayoutCombo, "QWERTY"),
+                    Size = KbComboText(kbSizeCombo, "medium"),
+                    Transparency = KbComboText(kbTransparencyCombo, "off"),
+                    Split = kbSplitCheck.IsChecked == true,
+                    Diacritics = kbDiacriticsCheck.IsChecked == true,
+                    Liftoff = kbLiftoffCheck.IsChecked == true,
+                    KeySound = kbKeySoundCheck.IsChecked == true,
+                    Rumble = kbRumbleCheck.IsChecked == true,
+                    TouchSensitivity = 140.0,
+                };
+                if (double.TryParse(kbTouchSensBox.Text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double sens) && sens > 0)
+                    s.TouchSensitivity = sens;
+                s.Save(profileNameTxt.Text);
+            }
+            catch { }
+        }
         private bool ApplyProfileStep(bool fullSave = true)
         {
             bool result = false;
@@ -2379,6 +2451,19 @@ namespace DS4WinWPF.DS4Forms
                 colorGB.Header = Translations.Strings.Color;
                 emptyColorGB.Visibility = Visibility.Hidden;
             }
+        }
+
+        private void MainColorBtn_Click(object sender, RoutedEventArgs e)
+        {
+            ColorPickerWindow dialog = new ColorPickerWindow();
+            dialog.Owner = Application.Current.MainWindow;
+            Color tempcolor = profileSettingsVM.MainColor;
+            dialog.colorPicker.SelectedColor = tempcolor;
+            profileSettingsVM.StartForcedColor(tempcolor);
+            dialog.ColorChanged += (sender2, color) => { profileSettingsVM.UpdateForcedColor(color); };
+            dialog.ShowDialog();
+            profileSettingsVM.EndForcedColor();
+            profileSettingsVM.UpdateMainColor(dialog.colorPicker.SelectedColor.GetValueOrDefault());
         }
 
         private void FlashColorBtn_Click(object sender, RoutedEventArgs e)

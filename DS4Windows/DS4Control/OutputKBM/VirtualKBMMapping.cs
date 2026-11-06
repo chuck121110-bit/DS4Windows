@@ -1,4 +1,4 @@
-﻿/*
+/*
 DS4Windows
 Copyright (C) 2023  Travis Nickles
 
@@ -27,6 +27,8 @@ namespace DS4Windows.DS4Control
             MOUSEEVENTF_WHEEL = 0x0800, MOUSEEVENTF_HWHEEL = 0x1000;
 
         public uint KEY_TAB = 0x09, KEY_LALT = 0x12;
+        // Arrow keys, handler-specific values set in PopulateConstants. Base defaults are VK codes, correct for SendInput. FakerInput overrides with KeyboardKey.LeftArrow/RightArrow, because FakerInput PerformKeyPress expects a KeyboardKey value, NOT a VK code. Passing raw VK 0x25/0x27 to FakerInput was the bug that made D-pad arrows do nothing in Alt-Tab: KeyboardKey(0x25) is not LeftArrow.
+        public uint KEY_LEFT = 0x25, KEY_RIGHT = 0x27;
         public int WHEEL_TICK_DOWN = -120, WHEEL_TICK_UP = 120;
         public bool macroKeyTranslate = false;
 

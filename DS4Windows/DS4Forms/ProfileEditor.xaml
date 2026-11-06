@@ -1379,20 +1379,9 @@
 
                             <StackPanel>
                                 <StackPanel Orientation="Horizontal">
-                                    <GroupBox x:Name="colorGB" Header="{lex:Loc Color}" Padding="4">
+                                    <GroupBox x:Name="colorGB" Header="{lex:Loc Color}" Padding="4" VerticalAlignment="Top">
                                         <StackPanel>
-                                            <StackPanel Orientation="Horizontal">
-                                                <Label Content="R" />
-                                                <Slider Value="{Binding MainColorR}" Minimum="0" Maximum="255" ToolTip="{Binding MainColorR}" MinWidth="100" Background="{Binding MainColorRString, FallbackValue=Red}"/>
-                                            </StackPanel>
-                                            <StackPanel Orientation="Horizontal">
-                                                <Label Content="G" />
-                                                <Slider Value="{Binding MainColorG}" MinWidth="100" Minimum="0" Maximum="255" ToolTip="{Binding MainColorG}" Background="{Binding MainColorGString, FallbackValue=Lime}"/>
-                                            </StackPanel>
-                                            <StackPanel Orientation="Horizontal">
-                                                <Label Content="B" />
-                                                <Slider Value="{Binding MainColorB}" MinWidth="100" Minimum="0" Maximum="255" ToolTip="{Binding MainColorB}" Background="{Binding MainColorBString, FallbackValue=Blue}"/>
-                                            </StackPanel>
+                                            <Button x:Name="mainColorBtn" Width="20" Height="20" Background="{Binding MainColorString,FallbackValue=Blue}" ToolTip="Pick lightbar color" Click="MainColorBtn_Click" HorizontalAlignment="Left" Margin="0,6,0,0" />
                                         </StackPanel>
                                     </GroupBox>
 
@@ -1537,6 +1526,9 @@
                                     <CheckBox Content="Start with Slide/Scroll Off" IsChecked="{Binding StartTouchpadOff}" VerticalAlignment="Center"
                                                     ToolTip="{lex:Loc Resources:TouchpadOffTip}" Margin="0,10,0,0" />
 
+                                    <CheckBox Content="Touchpad toggle also disables clicks" IsChecked="{Binding TouchToggleDisablesClicks}" VerticalAlignment="Center"
+                                                    ToolTip="PS plus touchpad turning controls off also disables scroll and mouse clicks" Margin="0,10,0,0" />
+
                                     <StackPanel Orientation="Horizontal" Margin="{StaticResource spaceMargin}">
                                         <Label Content="Rotation" ContentStringFormat="{}{0}:" />
                                         <xctk:DoubleUpDown d:IsHidden="True" MinWidth="80" Height="20" Minimum="-180" Maximum="180" Increment="1" FormatString="F0" Value="{Binding TouchRelMouseRotation,FallbackValue='0'}"
@@ -1638,6 +1630,9 @@
                                     <CheckBox Content="Passthru Click Action (DS4 mode)" IsChecked="{Binding TouchpadClickPassthru}" VerticalAlignment="Center"
                                                           Margin="5,8,0,10" />
 
+                                    <CheckBox Content="Touchpad toggle also disables clicks" IsChecked="{Binding TouchToggleDisablesClicks}" VerticalAlignment="Center"
+                                                    ToolTip="PS plus touchpad turning controls off also disables scroll and mouse clicks" Margin="5,8,0,0" />
+
                                     <ContentControl x:Name="touchContentControl2" MinWidth="400" HorizontalAlignment="Left" Margin="5,8,0,0" />
                                     <!--<local:TouchButtonUserControl x:Name="touchBtnControl2" MinWidth="400" Margin="0,8,0,0" />-->
                                 </StackPanel>
@@ -1645,6 +1640,9 @@
 
                             <TabItem Header="{lex:Loc MouseJoystick}" Visibility="Collapsed">
                                 <StackPanel x:Name="touchMouseJoystickPanel">
+
+                                    <CheckBox Content="Touchpad toggle also disables clicks" IsChecked="{Binding TouchToggleDisablesClicks}" VerticalAlignment="Center"
+                                                    ToolTip="PS plus touchpad turning controls off also disables scroll and mouse clicks" Margin="5,8,0,0" />
 
                                     <StackPanel Orientation="Horizontal" Margin="{StaticResource spaceMargin}">
                                         <Label Content="{lex:Loc DeadZone}" />
@@ -1765,6 +1763,9 @@
                                         <Label Content="Snap To Center on Release:" />
                                         <CheckBox IsChecked="{Binding TouchAbsMouseSnapCenter}" VerticalAlignment="Center" Margin="8,0,0,0" />
                                     </StackPanel>
+
+                                    <CheckBox Content="Touchpad toggle also disables clicks" IsChecked="{Binding TouchToggleDisablesClicks}" VerticalAlignment="Center"
+                                                    ToolTip="PS plus touchpad turning controls off also disables scroll and mouse clicks" Margin="5,8,0,0" />
 
                                     <StackPanel Orientation="Horizontal" Margin="{StaticResource spaceMargin}">
                                         <ContentControl x:Name="touchContentControl3" MinWidth="400" HorizontalAlignment="Left" Margin="5,0,0,0" />
@@ -3553,6 +3554,66 @@
                                 </Expander>
                             </StackPanel>
                         </GroupBox>
+                    <GroupBox Header="DualTouch Keyboard (per profile)" Margin="5">
+                        <StackPanel>
+                            <TextBlock Text="Exact DualTouch keyboard settings for this profile. Saved in a sidecar file next to the profile, the profile itself is not changed." TextWrapping="Wrap" Margin="5" />
+                            <Grid Margin="5">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="160" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <Label Content="Skin:" Grid.Row="0" Grid.Column="0" />
+                                <ComboBox x:Name="kbSkinCombo" Grid.Row="0" Grid.Column="1" Margin="5">
+                                    <ComboBoxItem Content="Gruvbox" />
+                                    <ComboBoxItem Content="DefaultTheme" />
+                                    <ComboBoxItem Content="Digital" />
+                                    <ComboBoxItem Content="NightShift" />
+                                    <ComboBoxItem Content="Ruby" />
+                                    <ComboBoxItem Content="Grape" />
+                                    <ComboBoxItem Content="Cerulean" />
+                                    <ComboBoxItem Content="Seafoam" />
+                                    <ComboBoxItem Content="Pumpkin" />
+                                </ComboBox>
+                                <Label Content="Layout:" Grid.Row="1" Grid.Column="0" />
+                                <ComboBox x:Name="kbLayoutCombo" Grid.Row="1" Grid.Column="1" Margin="5">
+                                    <ComboBoxItem Content="QWERTY" />
+                                    <ComboBoxItem Content="AZERTY" />
+                                    <ComboBoxItem Content="QWERTZ" />
+                                    <ComboBoxItem Content="Dvorak" />
+                                    <ComboBoxItem Content="Colemak" />
+                                    <ComboBoxItem Content="ABC" />
+                                </ComboBox>
+                                <Label Content="Size:" Grid.Row="2" Grid.Column="0" />
+                                <ComboBox x:Name="kbSizeCombo" Grid.Row="2" Grid.Column="1" Margin="5">
+                                    <ComboBoxItem Content="small" />
+                                    <ComboBoxItem Content="medium" />
+                                    <ComboBoxItem Content="full" />
+                                </ComboBox>
+                                <Label Content="Transparency:" Grid.Row="3" Grid.Column="0" />
+                                <ComboBox x:Name="kbTransparencyCombo" Grid.Row="3" Grid.Column="1" Margin="5">
+                                    <ComboBoxItem Content="off" />
+                                    <ComboBoxItem Content="low" />
+                                    <ComboBoxItem Content="medium" />
+                                    <ComboBoxItem Content="high" />
+                                </ComboBox>
+                                <Label Content="Touchpad sensitivity:" Grid.Row="4" Grid.Column="0" />
+                                <TextBox x:Name="kbTouchSensBox" Grid.Row="4" Grid.Column="1" Margin="5" Text="140" />
+                            </Grid>
+                            <CheckBox x:Name="kbSplitCheck" Content="Split layout" Margin="5" />
+                            <CheckBox x:Name="kbDiacriticsCheck" Content="Diacritics (hold a letter for accented variants)" Margin="5" IsChecked="True" />
+                            <CheckBox x:Name="kbLiftoffCheck" Content="Lift-off typing (type when the finger lifts off the touchpad)" Margin="5" />
+                            <CheckBox x:Name="kbKeySoundCheck" Content="Key sounds" Margin="5" IsChecked="True" />
+                            <CheckBox x:Name="kbRumbleCheck" Content="Rumble (haptic ticks)" Margin="5" IsChecked="True" />
+                            <TextBlock Text="Mapping: R2 Enter, L2 Shift, L3 Caps, Triangle Space, Square Backspace, Circle Close, Cross type highlighted key. Steam themes load at runtime from the Steam install when present." TextWrapping="Wrap" Margin="5" />
+                        </StackPanel>
+                    </GroupBox>
                     </StackPanel>
                 </ScrollViewer>
 

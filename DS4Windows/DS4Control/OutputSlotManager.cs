@@ -1,4 +1,4 @@
-﻿/*
+/*
 DS4Windows
 Copyright (C) 2023  Travis Nickles
 
@@ -163,6 +163,38 @@ namespace DS4Windows
             }
 
             return outputDevice;
+        }
+
+        // 2026-11-02 one main audio device: a gamepad-only primary has no
+        // Sony audio interfaces, so it creates no new audio endpoint.
+        // Use it for Sony primaries when a persistent DualSense audio
+        // sidecar already exists, or will be created, for that input
+        // slot. Xbox360/XboxOne/Switch2 types have no Sony audio
+        // interfaces of their own, so they fall back to the normal
+        // allocation. A gamepad-only DualSense/Edge/DS4 still carries
+        // full gamepad input, rumble and triggers; only microphone,
+        // direct speaker and audio haptics move to the sidecar.
+        public OutputDevice AllocateGamepadOnlyController(OutContType contType)
+        {
+            contType = contType.Normalize();
+            if (outputFactory != null) return outputFactory(contType);
+            switch (contType)
+            {
+                case OutContType.ViiperDS4:
+                    return new ViiperOutDevice(contType,
+                        ViiperVirtualDeviceType.DualShock4,
+                        gamepadOnly: true);
+                case OutContType.ViiperDualSense:
+                    return new ViiperOutDevice(contType,
+                        ViiperVirtualDeviceType.DualSense,
+                        gamepadOnly: true);
+                case OutContType.ViiperDualSenseEdge:
+                    return new ViiperOutDevice(contType,
+                        ViiperVirtualDeviceType.DualSenseEdge,
+                        gamepadOnly: true);
+                default:
+                    return AllocateController(contType);
+            }
         }
 
         private int FindEmptySlot()

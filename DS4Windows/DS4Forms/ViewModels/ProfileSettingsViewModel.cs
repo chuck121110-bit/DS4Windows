@@ -2449,6 +2449,15 @@ namespace DS4WinWPF.DS4Forms.ViewModels
             }
         }
 
+        public bool TouchToggleDisablesClicks
+        {
+            get => Global.TouchToggleDisablesClicks[device];
+            set
+            {
+                Global.TouchToggleDisablesClicks[device] = value;
+            }
+        }
+
         public bool StartTouchpadOff
         {
             get => Global.StartTouchpadOff[device];

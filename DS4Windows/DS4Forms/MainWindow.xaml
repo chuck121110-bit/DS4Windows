@@ -726,6 +726,16 @@
                                             Margin="8,0,0,0"
                                             Click="ViiperRefreshBtn_Click" />
                                 </StackPanel>
+                                <Button x:Name="removeMainAudioBtn"
+                                        Content="Remove main DualSense audio device"
+                                        Padding="8,2"
+                                        Margin="0,8,0,0"
+                                        Click="RemoveMainAudioBtn_Click" />
+                                <TextBlock Text="This is the only way DS4Windows removes the main DualSense speaker and microphone. They are never removed automatically, on start, connect, profile switch, disconnect, or DS4 stop. Use this button only if you explicitly want them removed; they return on the next controller connect."
+                                           TextWrapping="Wrap"
+                                           MaxWidth="420"
+                                           Opacity="0.75"
+                                           Margin="0,6,0,0" />
                                 <TextBlock Text="Required for VIIPER outputs: DualSense, DualSense Edge, Switch 2 Pro, DS4, Xbox 360, and Xbox One / Series over USB/IP."
                                            TextWrapping="Wrap"
                                            MaxWidth="420"

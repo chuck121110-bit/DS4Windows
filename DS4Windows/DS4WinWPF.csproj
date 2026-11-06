@@ -123,6 +123,17 @@
 	</Target>
 
 	<ItemGroup>
+		<!-- Real Python DualTouch keyboard: copied to the publish
+		     folder with DS4, so the runner finds it next to the exe.
+		     No SDL DLLs, no tray, no Steam files are included. -->
+
+		<Content Include="DualTouchKeyboard\**\*">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
+		<Content Include="keyboard\**\*">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+			<CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+		</Content>
 		<Content Include="BezierCurveEditor\build.js">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</Content>

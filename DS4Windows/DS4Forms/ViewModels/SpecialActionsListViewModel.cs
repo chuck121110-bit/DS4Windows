@@ -1,4 +1,4 @@
-﻿/*
+/*
 DS4Windows
 Copyright (C) 2023  Travis Nickles
 
@@ -137,8 +137,17 @@ namespace DS4WinWPF.DS4Forms.ViewModels
                     displayName = Properties.Resources.LoadProfile.Replace("*profile*", action.details);
                     break;
                 case SpecialAction.ActionTypeId.Key:
-                    displayName = KeyInterop.KeyFromVirtualKey(int.Parse(action.details)).ToString() +
-                         (action.keyType.HasFlag(DS4KeyType.Toggle) ? " (Toggle)" : "");
+                    displayName = FormatMultiKeyDisplay(action);
+                    break;
+                case SpecialAction.ActionTypeId.SystemAction:
+                    displayName = FormatSystemActionDisplay(action);
+                    break;
+                case SpecialAction.ActionTypeId.SwitchPrograms:
+                    displayName = "Switch Programs";
+                    break;
+                case SpecialAction.ActionTypeId.OnScreenKeyboard:
+                    displayName = "On-Screen Keyboard" +
+                        (!string.IsNullOrEmpty(action.details) && action.details.IndexOf("TouchpadCursor", StringComparison.Ordinal) >= 0 ? " (Touchpad Cursor)" : "");
                     break;
                 case SpecialAction.ActionTypeId.BatteryCheck:
                     displayName = Properties.Resources.CheckBattery;
@@ -159,6 +168,66 @@ namespace DS4WinWPF.DS4Forms.ViewModels
             }
 
             return displayName;
+        }
+
+        // Multi-key Press / Toggle: details may be "17", "17,18",
+        // "17,18;Sequence", or "17 Scan Code". Never crash on parse.
+        private static string FormatMultiKeyDisplay(SpecialAction action)
+        {
+            string d = action.details ?? string.Empty;
+            bool sequence = d.IndexOf("Sequence", StringComparison.Ordinal) >= 0;
+            bool scanCode = d.IndexOf("Scan Code", StringComparison.Ordinal) >= 0 ||
+                action.keyType.HasFlag(DS4KeyType.ScanCode);
+            List<string> names = new List<string>();
+            string first = d.Split(';')[0];
+            foreach (string token in first.Split(','))
+            {
+                string tok = token.Trim();
+                if (tok.EndsWith(" Scan Code", StringComparison.Ordinal))
+                    tok = tok.Substring(0, tok.Length - " Scan Code".Length).Trim();
+                if (int.TryParse(tok, out int vk) && vk != 0)
+                {
+                    try { names.Add(KeyInterop.KeyFromVirtualKey(vk).ToString()); }
+                    catch { names.Add(tok); }
+                }
+            }
+            if (names.Count == 0)
+                return "Press / Toggle Keys";
+            string result = string.Join(" + ", names);
+            if (scanCode) result += " (SC)";
+            if (action.keyType.HasFlag(DS4KeyType.Toggle)) result += " (Toggle)";
+            if (sequence) result += " (Sequence)";
+            return result;
+        }
+
+        // System Action: details is a value like "VolumeUp", or
+        // "Custom:17,18". Show the label, not a blank.
+        private static string FormatSystemActionDisplay(SpecialAction action)
+        {
+            string d = action.details ?? string.Empty;
+            if (d.StartsWith("Custom:", StringComparison.Ordinal))
+            {
+                List<string> names = new List<string>();
+                foreach (string token in d.Substring("Custom:".Length).Split(','))
+                {
+                    if (int.TryParse(token.Trim(), out int vk) && vk != 0)
+                    {
+                        try { names.Add(KeyInterop.KeyFromVirtualKey(vk).ToString()); }
+                        catch { names.Add(token.Trim()); }
+                    }
+                }
+                return names.Count > 0 ? "System Action: Custom Keys: " + string.Join(" + ", names)
+                    : "System Action: Custom Keys";
+            }
+            // Copy/Paste removed from Special Actions (DualTouch port).
+            string[] values = new string[] { "VolumeUp", "VolumeDown", "VolumeMute",
+                "Cut", "Undo", "Redo", "SelectAll", "Save", "CloseWindow" };
+            string[] labels = new string[] { "Volume Up", "Volume Down", "Volume Mute",
+                "Cut", "Undo", "Redo", "Select All", "Save", "Close Window" };
+            for (int i = 0; i < values.Length; i++)
+                if (values[i] == d)
+                    return "System Action: " + labels[i];
+            return string.IsNullOrEmpty(d) ? "System Action" : "System Action: " + d;
         }
 
         public void ExportEnabledActions()

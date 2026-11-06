@@ -1,4 +1,4 @@
-/*
+﻿/*
 DS4Windows
 Copyright (C) 2023  Travis Nickles
 
@@ -546,6 +546,23 @@ namespace DS4Windows.InputDevices
         // successfully presented report acknowledges the prepared subset.
         private byte pendingProfileMuteReleaseStrobes;
         private byte preparedProfileMuteReleaseStrobes;
+        // 2026-11-05 LED fix: mic mute LED direct-send request. Set by
+        // ControlService on a mute-button click; claimed once in
+        // FlushPreparedOutputReport, which then sends a direct BT
+        // control report instead of waiting for the speaker clock.
+        private int muteLedDirectSendRequested;
+        // 2026-11-06: a failed mute direct send is re-queued so orange is
+        // never lost, but only the first attempt per request may use the
+        // completion-aware path, which blocks the physical output worker for
+        // up to a second. Later attempts publish through the ordinary
+        // non-blocking cached path, which already carries MuteLedOverride.
+        private int muteLedDirectSendAttempt;
+        // Throttle for the per-attempt log below: the request is re-queued
+        // on every failure, so logging each one wrote one line per retry
+        // (168k lines in a single session).
+        private byte muteLedDirectSendLoggedState = byte.MaxValue;
+        private long muteLedDirectSendLoggedTimestamp;
+        private bool batteryHoldDirectLogged;
         private int nativeSessionReleasePending;
         private long nativeGameOutputRevision;
         private long pendingNativeGameLedReleaseRevision;
@@ -739,7 +756,7 @@ namespace DS4Windows.InputDevices
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x0A, 0x07, 0x00,
-            0x00, 0x02, 0x01, 0x00, 0xFF, 0xD7, 0x00, 0x00,
+            0x00, 0x02, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         };
@@ -2897,6 +2914,9 @@ namespace DS4Windows.InputDevices
                             RumbleMotorStrengthRightLightFast,
                         snapshot.RumbleState.
                             RumbleMotorStrengthLeftHeavySlow);
+                    RumbleLogger.LogRumble(MacAddress?.ToString(),
+                        snapshot.RumbleState.RumbleMotorStrengthRightLightFast,
+                        snapshot.RumbleState.RumbleMotorStrengthLeftHeavySlow);
                     QueuePhysicalOutputUpdate();
                 }
             }
@@ -2917,6 +2937,9 @@ namespace DS4Windows.InputDevices
                             RumbleMotorStrengthRightLightFast,
                         snapshot.RumbleState.
                             RumbleMotorStrengthLeftHeavySlow);
+                    RumbleLogger.LogRumble(MacAddress?.ToString(),
+                        snapshot.RumbleState.RumbleMotorStrengthRightLightFast,
+                        snapshot.RumbleState.RumbleMotorStrengthLeftHeavySlow);
                     QueuePhysicalOutputUpdate();
                 }
             }
@@ -2932,6 +2955,9 @@ namespace DS4Windows.InputDevices
                     state.lightbarState, state.rumbleState, out _))
             {
                 base.setRumble(
+                    state.rumbleState.RumbleMotorStrengthRightLightFast,
+                    state.rumbleState.RumbleMotorStrengthLeftHeavySlow);
+                RumbleLogger.LogRumble(MacAddress?.ToString(),
                     state.rumbleState.RumbleMotorStrengthRightLightFast,
                     state.rumbleState.RumbleMotorStrengthLeftHeavySlow);
                 QueuePhysicalOutputUpdate();
@@ -2952,6 +2978,9 @@ namespace DS4Windows.InputDevices
                 base.setRumble(
                     rumbleState.RumbleMotorStrengthRightLightFast,
                     rumbleState.RumbleMotorStrengthLeftHeavySlow);
+                RumbleLogger.LogRumble(MacAddress?.ToString(),
+                    rumbleState.RumbleMotorStrengthRightLightFast,
+                    rumbleState.RumbleMotorStrengthLeftHeavySlow);
                 QueuePhysicalOutputUpdate();
             }
         }
@@ -2969,6 +2998,7 @@ namespace DS4Windows.InputDevices
             if (physicalOutputStateMailbox.SetRumbleState(rumble, out _))
             {
                 base.setRumble(rightLightFastMotor, leftHeavySlowMotor);
+                RumbleLogger.LogRumble(MacAddress?.ToString(), rightLightFastMotor, leftHeavySlowMotor);
                 QueuePhysicalOutputUpdate();
             }
         }
@@ -3105,6 +3135,13 @@ namespace DS4Windows.InputDevices
             {
                 QueuePhysicalOutputUpdate();
             }
+        }
+
+        internal void RequestMuteLedDirectSend()
+        {
+            Interlocked.Exchange(ref muteLedDirectSendAttempt, 0);
+            Interlocked.Exchange(ref muteLedDirectSendRequested, 1);
+            QueuePhysicalOutputUpdate();
         }
 
         public override event ReportHandler<EventArgs> Report = null;
@@ -4287,9 +4324,11 @@ namespace DS4Windows.InputDevices
                 // do not publish ownership before the physical write proves
                 // success. Otherwise a failed LED claim can hide the profile
                 // while a failed release can expose it prematurely.
+                // In DS4Win mode a native claim is rejected outright.
                 outputState = outputState with
                 {
                     NativeGameLightbarOwnershipReleased =
+                        IsDs4WinLightbarMode() ||
                         ledOwnershipUpdate < 0,
                 };
             }
@@ -4309,6 +4348,7 @@ namespace DS4Windows.InputDevices
             {
                 physicalOutputStateMailbox.
                     SetNativeGameLightbarOwnershipReleased(
+                        IsDs4WinLightbarMode() ||
                         ledOwnershipUpdate < 0);
             }
 
@@ -5371,7 +5411,7 @@ namespace DS4Windows.InputDevices
                     /* Debug output of incoming HID data:
                     if (cState.L2 == 0xff && cState.R2 == 0xff)
                     {
-                        Console.Write(MacAddress.ToString() + " " + System.DateTime.UtcNow.ToString("o") + ">");
+                        Console.Write(MacAddress?.ToString() + " " + System.DateTime.UtcNow.ToString("o") + ">");
                         for (int i = 0; i < inputReport.Length; i++)
                             Console.Write(" " + inputReport[i].ToString("x2"));
                         Console.WriteLine();
@@ -6651,12 +6691,16 @@ namespace DS4Windows.InputDevices
                         bluetoothCombinedNativeStateScratch);
                     latestBluetoothCombinedNativeStateTimestamp =
                         Stopwatch.GetTimestamp();
-                    if (outputState.NativeGameLightbarOwnershipReleased)
+                    if (outputState.NativeGameLightbarOwnershipReleased ||
+                        IsDs4WinLightbarMode())
                     {
                         // Sony's release bit is an immediate ownership
                         // boundary. Publish the profile lightbar and player
                         // LEDs in this same atomic carrier instead of waiting
                         // for an unrelated later state/media callback.
+                        // In DS4Win mode this is unconditional: a native
+                        // claim was rejected above, so the native player LED
+                        // mask and lightbar color are never in this report.
                         MergeProfileLightbarIntoV5AudioSnapshot(outputState,
                             latestBluetoothCombinedSpeakerReport,
                             BluetoothCombinedStateOffset);
@@ -6671,12 +6715,39 @@ namespace DS4Windows.InputDevices
                             BluetoothCombinedStateOffset);
                     }
                     else if (outputState.
-                        NativeGameLightbarOwnershipReleased)
+                        NativeGameLightbarOwnershipReleased ||
+                        IsDs4WinLightbarMode())
                     {
                         MergeProfileLightbarIntoV5AudioSnapshot(outputState,
                             latestBluetoothCombinedSpeakerReport,
                             BluetoothCombinedStateOffset);
                     }
+                }
+                // Lightbar hold, faded mailbox color only: DS4LightBar
+                // already resolved battery-over-connect priority and
+                // applied the fade into the mailbox, so merge that color
+                // regardless of native ownership. The previous raw
+                // connect color here snapped instead of fading.
+                if (AnyLightbarHoldActive())
+                {
+                    MergeProfileLightbarIntoV5AudioSnapshot(
+                        physicalOutputStateMailbox.ReadLatest(),
+                        latestBluetoothCombinedSpeakerReport,
+                        BluetoothCombinedStateOffset);
+                }
+                // Mic LED must win in the BT cache too, not only in
+                // disposable control reports. The speaker clock copies
+                // this cache every ~10ms, and it preserved the old mic
+                // byte forever, so a speaker report arriving after a
+                // mute direct send wiped orange back to 0. Stock
+                // ApplyProfileMuteButtonStateToNativeReport only runs
+                // on native reports, never on this cache.
+                if (outputState.MuteLedOverride)
+                {
+                    latestBluetoothCombinedSpeakerReport[BluetoothCombinedStateMuteLedOffset] =
+                        outputState.MuteLedOn ? (byte)0x01 : (byte)0x00;
+                    latestBluetoothCombinedSpeakerReport[BluetoothCombinedStateOffset + 1] |=
+                        DualSenseOutputFlag1MicrophoneMuteLedControlEnable;
                 }
                 // A native HID SET_REPORT is state-only. VIIPER attaches the
                 // current media snapshot so state and media can share one
@@ -6793,11 +6864,19 @@ namespace DS4Windows.InputDevices
                     bluetoothCombinedNativeStateScratch);
                 latestBluetoothCombinedNativeStateTimestamp =
                     Stopwatch.GetTimestamp();
-                if (outputState.NativeGameLightbarOwnershipReleased)
+                if (outputState.NativeGameLightbarOwnershipReleased ||
+                    IsDs4WinLightbarMode())
                 {
                     MergeProfileLightbarIntoV5AudioSnapshot(outputState,
                         latestBluetoothCombinedSpeakerReport,
                         BluetoothCombinedStateOffset);
+                }
+                if (outputState.MuteLedOverride)
+                {
+                    latestBluetoothCombinedSpeakerReport[BluetoothCombinedStateMuteLedOffset] =
+                        outputState.MuteLedOn ? (byte)0x01 : (byte)0x00;
+                    latestBluetoothCombinedSpeakerReport[BluetoothCombinedStateOffset + 1] |=
+                        DualSenseOutputFlag1MicrophoneMuteLedControlEnable;
                 }
                 ApplyActiveRumblePreviewToV5AudioSnapshot(
                     latestBluetoothCombinedSpeakerReport,
@@ -6823,6 +6902,7 @@ namespace DS4Windows.InputDevices
             long ownerRequestGeneration = 0,
             bool bluetoothCacheAdmitted = false)
         {
+            bool muteLedDirectSendThisFlush = false;
             if (outputDirty)
             {
                 bool published = true;
@@ -6830,6 +6910,57 @@ namespace DS4Windows.InputDevices
                 // even while speaker and microphone media are idle.
                 if (conType == ConnectionType.BT)
                 {
+                    bool lightbarHoldActive = AnyLightbarHoldActive();
+                    if (!lightbarHoldActive)
+                    {
+                        // Reset per hold, unconditionally. This used to live
+                        // inside the direct-send branch below, which a flush
+                        // that took the speaker-cached path never reached, so
+                        // the flag stayed set for the rest of the session and
+                        // the next battery check logged no direct send and
+                        // never restarted the fade-in the transport missed.
+                        batteryHoldDirectLogged = false;
+                    }
+                    bool muteLedDirectSend = Interlocked.Exchange(ref muteLedDirectSendRequested, 0) == 1;
+                    muteLedDirectSendThisFlush = muteLedDirectSend;
+                    bool muteLedDirectSendFirstAttempt = false;
+                    if (muteLedDirectSend)
+                    {
+                        muteLedDirectSendFirstAttempt =
+                            Interlocked.Increment(ref muteLedDirectSendAttempt) == 1;
+                        // The request is re-queued by every failed attempt, so
+                        // logging each one wrote a line per retry (168k lines
+                        // in a single session). Log the first attempt, then
+                        // only a mute-state change or once per second.
+                        byte muteLedLogState = activePhysicalOutputState.MuteLedOn ? (byte)1 : (byte)0;
+                        long muteLedLogNow = Stopwatch.GetTimestamp();
+                        if (muteLedDirectSendLoggedState != muteLedLogState ||
+                            muteLedLogNow - muteLedDirectSendLoggedTimestamp >= Stopwatch.Frequency)
+                        {
+                            muteLedDirectSendLoggedState = muteLedLogState;
+                            muteLedDirectSendLoggedTimestamp = muteLedLogNow;
+                            AppLogger.LogToGui($"LED mute direct send: MuteLedOverride={activePhysicalOutputState.MuteLedOverride} MuteLedOn={activePhysicalOutputState.MuteLedOn}", false);
+                        }
+                    }
+                    if (lightbarHoldActive)
+                    {
+                        MergeHeldLightbarIntoBluetoothCache();
+                    }
+
+                    // A completion-aware control send blocks the physical
+                    // output worker for up to a second, and the helper
+                    // acknowledges the first report of a burst then lets the
+                    // next one time out (every connect in the live log shows
+                    // one success followed by a failure exactly 1000 ms
+                    // later). It is only needed while we still do not know
+                    // when the held colour physically reached the controller.
+                    // Once that is known, later hold ticks publish through
+                    // the ordinary non-blocking cached path, which already
+                    // carries the merged held or faded colour.
+                    bool holdNeedsCompletionProof = lightbarHoldActive &&
+                        (!DS4LightBar.IsBatteryFadePublished(DeviceSlotNumber) ||
+                         !DS4LightBar.IsConnectFadePublished(DeviceSlotNumber));
+                    bool directControlAttempted = false;
                     published = bluetoothCacheAdmitted;
                     if (published &&
                         (preparedProfileMuteReleaseStrobes != 0 || preparedDsxReleaseFields != 0))
@@ -6851,6 +6982,81 @@ namespace DS4Windows.InputDevices
                                     preparedProfileMuteReleaseStrobes,
                                 dsxReleaseFields: preparedDsxReleaseFields);
                     }
+                    else if (published &&
+                        (muteLedDirectSendFirstAttempt || holdNeedsCompletionProof))
+                    {
+                        // Time-critical hold color: a speaker-clocked
+                        // template only reaches the controller on the next
+                        // audio frame, and a VIIPER stream that is waiting
+                        // or recovering may not deliver one inside the
+                        // 1 second hold. Send a direct control report now,
+                        // with completion, like mute release strobes.
+                        // 2026-11-03 vibration fix: this is an LED-only
+                        // report. With includeNativeHaptics true it copied
+                        // the cached game/audio haptics frame and set a
+                        // persistent haptics expiry, so every tick during
+                        // a hold (ForceBatteryLightbarOwnership queues an
+                        // output every tick) re-presented the same haptics
+                        // pulse, causing pulsing vibration. With false,
+                        // the haptics bytes are cleared and expiry is 0,
+                        // so LED ticks never replay game/audio rumble.
+                        // Game rumble still goes through its own normal
+                        // path, untouched.
+                        published =
+                            TryWriteCachedBluetoothCombinedControlReport(
+                                includeNativeHaptics: false,
+                                reportDescription: muteLedDirectSend && !lightbarHoldActive ? "mute LED" : "lightbar hold",
+                                waitForCompletion: true,
+                                allowDuringStopping: false,
+                                outputState: activePhysicalOutputState,
+                                profileMuteReleaseStrobes:
+                                    preparedProfileMuteReleaseStrobes,
+                                dsxReleaseFields: preparedDsxReleaseFields);
+                        directControlAttempted = true;
+                        string directSendStatus = LastBluetoothHapticsWriteStatus;
+                        if (!published)
+                        {
+                            // The completion-aware report is the fastest path
+                            // to the controller, not the only one. Admission
+                            // can be rejected while the helper recovers and
+                            // the wait can time out, so publish through the
+                            // speaker-cached path instead: the cache already
+                            // holds the merged held or faded colour and the
+                            // mute byte, so the LED still reaches the
+                            // controller rather than being stranded until the
+                            // transport comes back on its own.
+                            published = TryPublishCachedBluetoothCombinedState(
+                                includeNativeHaptics: true,
+                                activeStatus:
+                                    "Published the held lightbar colour through the Bluetooth cache after the direct control report was rejected.",
+                                idleReportDescription: "held lightbar colour",
+                                out _);
+                        }
+                        if (published)
+                        {
+                            // First successful physical publish: start
+                            // the fade clocks now, not at the first software
+                            // tick (which may have been while BT transport
+                            // was still transitioning and published=False).
+                            DS4LightBar.MarkBatteryFadePublished(DeviceSlotNumber);
+                            DS4LightBar.MarkConnectFadePublished(DeviceSlotNumber);
+                        }
+                        else if (!DS4LightBar.IsLedDirectSendFailedLogged(DeviceSlotNumber))
+                        {
+                            DS4LightBar.SetLedDirectSendFailedLogged(DeviceSlotNumber, true);
+                            AppLogger.LogToGui($"LED direct send failed during hold: {directSendStatus} (cache fallback also failed: {LastBluetoothHapticsWriteStatus})", true);
+                        }
+                        if (lightbarHoldActive && !batteryHoldDirectLogged)
+                        {
+                            batteryHoldDirectLogged = true;
+                            AppLogger.LogToGui($"LED battery hold direct send: color={activePhysicalOutputState.ProfileLightbar.LightBarColor.red},{activePhysicalOutputState.ProfileLightbar.LightBarColor.green},{activePhysicalOutputState.ProfileLightbar.LightBarColor.blue} published={published}", false);
+                            // 2026-11-05 fade-in fix: if the 600 ms software
+                            // fade already expired before this first physical
+                            // send, the controller never saw it (snap).
+                            // Restart it once, so it is actually visible.
+                            try { DS4LightBar.RestartMissedFadeIn(DeviceSlotNumber); } catch { }
+                        }
+                    }
                     else if (published)
                     {
                         published = TryPublishCachedBluetoothCombinedState(
@@ -6859,6 +7065,29 @@ namespace DS4Windows.InputDevices
                                 "Merged controller state into the next speaker-clocked combined Bluetooth report.",
                             idleReportDescription: "controller state",
                             out _);
+                    }
+                    if (!published && !directControlAttempted)
+                    {
+                        // Speaker-clocked publish failed, or the cache was
+                        // never admitted: do not leave the LED waiting for
+                        // the next audio frame. One direct control report
+                        // with the current cache, which already carries the
+                        // held color when a hold is active.
+                        if (lightbarHoldActive)
+                        {
+                            MergeHeldLightbarIntoBluetoothCache();
+                        }
+
+                        published =
+                            TryWriteCachedBluetoothCombinedControlReport(
+                                includeNativeHaptics: true,
+                                reportDescription: "Bluetooth controller state",
+                                waitForCompletion: true,
+                                allowDuringStopping: false,
+                                outputState: activePhysicalOutputState,
+                                profileMuteReleaseStrobes:
+                                    preparedProfileMuteReleaseStrobes,
+                                dsxReleaseFields: preparedDsxReleaseFields);
                     }
                 }
                 else
@@ -6873,12 +7102,21 @@ namespace DS4Windows.InputDevices
                 {
                     // Keep dirty state pending so a transient helper queue/fault
                     // cannot turn the latest light/rumble state into a silent
-                    // permanent loss.
+                    // permanent loss. A mute direct-send request was consumed
+                    // at the top of this method; if this send failed, re-queue
+                    // it, or orange is lost on the first failed attempt.
+                    if (muteLedDirectSendThisFlush)
+                        Interlocked.Exchange(ref muteLedDirectSendRequested, 1);
                     RequestBluetoothOutputRecoveryUnlessNativeAdmissionBusy();
                     SchedulePhysicalOutputRetry();
                     return;
                 }
 
+                if (published)
+                {
+                    DS4LightBar.MarkBatteryFadePublished(DeviceSlotNumber);
+                    DS4LightBar.MarkConnectFadePublished(DeviceSlotNumber);
+                }
                 pendingProfileMuteReleaseStrobes =
                     AcknowledgeProfileMuteReleaseStrobes(
                         pendingProfileMuteReleaseStrobes,
@@ -7072,6 +7310,17 @@ namespace DS4Windows.InputDevices
                     {
                         MergeProfileLightbarIntoV5AudioSnapshot(
                             activePhysicalOutputState,
+                            latestBluetoothCombinedSpeakerReport,
+                            BluetoothCombinedStateOffset);
+                    }
+                    // Lightbar hold wins over native game ownership in
+                    // this tick path too: merge the faded mailbox color
+                    // regardless of ownership, so a game report each frame
+                    // cannot keep a battery/connect color out of the cache.
+                    if (AnyLightbarHoldActive())
+                    {
+                        MergeProfileLightbarIntoV5AudioSnapshot(
+                            physicalOutputStateMailbox.ReadLatest(),
                             latestBluetoothCombinedSpeakerReport,
                             BluetoothCombinedStateOffset);
                     }
@@ -7298,8 +7547,34 @@ namespace DS4Windows.InputDevices
             return controlsPlayer || controlsLightbar ? 1 : 0;
         }
 
+        // 2026-11-01: in DS4Win mode DS4Windows owns the lightbar and the
+        // player LEDs. A native game report must not claim them, not even
+        // for one packet at connect. This is not an override sent after
+        // the fact: the claim is rejected here at admission, so the native
+        // player LED mask and lightbar color never enter a physical report.
+        // In Passthru mode this does nothing, a game is supposed to own
+        // the LEDs there.
+        private bool IsDs4WinLightbarMode()
+        {
+            try
+            {
+                int slot = DeviceSlotNumber;
+                return slot >= 0 &&
+                    Global.getLightbarSettingsInfo(slot).mode ==
+                        LightbarMode.DS4Win;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private void PublishNativeGameLightbarOwnership(bool released)
         {
+            if (!released && IsDs4WinLightbarMode())
+            {
+                return;
+            }
             if (physicalOutputStateMailbox.
                 SetNativeGameLightbarOwnershipReleased(released))
             {
@@ -7314,10 +7589,90 @@ namespace DS4Windows.InputDevices
         // during the hold.
         internal void ForceBatteryLightbarOwnership()
         {
-            if (physicalOutputStateMailbox.
-                SetNativeGameLightbarOwnershipReleased(true))
+            // Queue every tick during a hold, not only on the first
+            // ownership change: a game native report each frame can
+            // otherwise reclaim ownership and overwrite the hold color
+            // before the physical output worker sends it. This changes
+            // only the visual ownership bit, not triggers, rumble,
+            // audio, or mic state.
+            physicalOutputStateMailbox.
+                SetNativeGameLightbarOwnershipReleased(true);
+            QueuePhysicalOutputUpdate();
+        }
+
+        // 2026-11-03 connect snap fix: if a connect-hold physical
+        // send is deferred (BT audio pacer helper restarting at
+        // connect, lifecycle transitioning), the 600 ms software
+        // fade expires before transport is ready, so the first
+        // successful send only carries the final color, a snap.
+        // Remember the deferral, and on the first later successful
+        // send request a fresh connect fade in DS4LightBar.
+        // Capped per device instance so a flapping transport
+        // cannot replay fades forever. Battery holds never set
+        // this flag, and profile switches never create a new
+        // device instance, so neither path is touched.
+        internal static bool AnyLightbarHoldActive()
+        {
+            DateTime now = DateTime.UtcNow;
+            for (int i = 0; i < DS4LightBar.BatteryHoldUntil.Length; i++)
             {
-                QueuePhysicalOutputUpdate();
+                if (DS4LightBar.BatteryHoldUntil[i] != DateTime.MinValue &&
+                    now < DS4LightBar.BatteryHoldUntil[i])
+                {
+                    return true;
+                }
+            }
+
+            for (int i = 0; i < DS4LightBar.ConnectHoldUntil.Length; i++)
+            {
+                if (DS4LightBar.ConnectHoldUntil[i] != DateTime.MinValue &&
+                    now < DS4LightBar.ConnectHoldUntil[i])
+                {
+                    return true;
+                }
+            }
+
+            // 2026-11-03 fade-out latch fix: a battery fade-out (plus its
+            // 750 ms grace, so the final profile color lands) is a hold
+            // for transport. Without this, fade-out colors were computed
+            // in DS4LightBar but never merged into the BT cache and never
+            // direct-sent, because BatteryHoldUntil is already MinValue
+            // during fade-out. The BT cache then kept the battery color
+            // indefinitely, and only a controller power cycle cleared it.
+            for (int i = 0; i < Global.MAX_DS4_CONTROLLER_COUNT; i++)
+            {
+                if (DS4LightBar.IsBatteryFadeOutActive(i))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private bool MergeHeldLightbarIntoBluetoothCache()
+        {
+            if (!AnyLightbarHoldActive())
+            {
+                return false;
+            }
+
+            lock (bluetoothCombinedSpeakerReportLock)
+            {
+                if (!bluetoothCombinedSpeakerReportAvailable)
+                {
+                    return false;
+                }
+
+                // DS4LightBar already resolved battery-over-connect
+                // priority and applied the 600/420 ms fade into the
+                // mailbox, so merge that faded color, never a raw hold
+                // color, which would snap instead of fading.
+                MergeProfileLightbarIntoV5AudioSnapshot(
+                    physicalOutputStateMailbox.ReadLatest(),
+                    latestBluetoothCombinedSpeakerReport,
+                    BluetoothCombinedStateOffset);
+                return true;
             }
         }
 
@@ -7461,6 +7816,11 @@ namespace DS4Windows.InputDevices
                     {
                         if (!bluetoothCombinedSpeakerReportAvailable)
                         {
+                            // This used to return false without setting a
+                            // status, so callers logged whatever stale reason
+                            // the previous send had left behind.
+                            LastBluetoothHapticsWriteStatus =
+                                $"Deferred {reportDescription}: the Bluetooth combined report cache is not available yet.";
                             return false;
                         }
 
@@ -8214,16 +8574,13 @@ namespace DS4Windows.InputDevices
             if (!color.HasValue && (releasedFields & DualSenseDsxOverlay.ColorField) != 0)
                 color = !outputState.NativeGameLightbarOwnershipReleased && native.Color.HasValue
                     ? native.Color : outputState.ProfileLightbar.LightBarColor;
-            // 2026-10-31: battery hold forces over Steam/game native color,
-            // at the final native report stage, regardless of ownership.
-            for (int bi = 0; bi < DS4LightBar.BatteryHoldUntil.Length; bi++)
+            // Lightbar hold, faded mailbox color only: DS4LightBar already
+            // resolved battery-over-connect priority and applied the fade
+            // into the mailbox ProfileLightbar, so use that color, never
+            // the raw hold color, which would snap instead of fading.
+            if (AnyLightbarHoldActive())
             {
-                if (DS4LightBar.BatteryHoldUntil[bi] != DateTime.MinValue &&
-                    DateTime.UtcNow < DS4LightBar.BatteryHoldUntil[bi])
-                {
-                    color = DS4LightBar.BatteryHoldColor[bi];
-                    break;
-                }
+                color = outputState.ProfileLightbar.LightBarColor;
             }
             if (color.HasValue)
             {
@@ -8242,9 +8599,16 @@ namespace DS4Windows.InputDevices
                 report[stateOffset + 43] = player.Value;
             }
             byte? mic = overlay.MicLed;
-            if (!mic.HasValue && (releasedFields & DualSenseDsxOverlay.MicField) != 0)
-                mic = outputState.MuteLedOverride ? (outputState.MuteLedOn ? (byte)1 : (byte)0) :
-                    outputState.MicrophoneMuteOverride ? (outputState.MicrophoneMuted ? (byte)1 : (byte)0) :
+            // DS4 FIX (2026-11-05): profile mute LED must win over a
+            // game's native mic LED every frame, not only on a release
+            // strobe. Fortnite's native report carries MicLed=0 every
+            // frame, so the old code let the game wipe orange ~16ms
+            // after DS4 sent it, which is why the LED looked dead even
+            // though the DS4 log showed the direct send.
+            if (outputState.MuteLedOverride)
+                mic = outputState.MuteLedOn ? (byte)1 : (byte)0;
+            else if (!mic.HasValue && (releasedFields & DualSenseDsxOverlay.MicField) != 0)
+                mic = outputState.MicrophoneMuteOverride ? (outputState.MicrophoneMuted ? (byte)1 : (byte)0) :
                     native.MicLed ?? outputState.MuteLedByte;
             if (mic.HasValue)
             {
@@ -8560,6 +8924,7 @@ namespace DS4Windows.InputDevices
 
             TriggerEffectData triggerState = default;
             triggerState.ChangeData(effect, effectSettings);
+            try { DS4Windows.TriggerEffectLogger.LogEffect("profile-trigger-effect", trigger.ToString(), (byte)effect, new byte[] { (byte)effect, effectSettings.startValue, effectSettings.maxValue }, "PrepareTriggerEffect, including PS+Circle keyboard-open None and profile restore None"); } catch { }
             if (physicalOutputStateMailbox.SetTriggerLabTrigger(trigger, triggerState, false))
             {
                 QueuePhysicalOutputUpdate();
@@ -8581,6 +8946,7 @@ namespace DS4Windows.InputDevices
             triggerState.ChangeRaw(mode, startResistance, effectForce,
                 rangeForce, nearReleaseStrength, nearMiddleStrength,
                 pressedStrength, frequency);
+            try { DS4Windows.TriggerEffectLogger.LogEffect("game-native-raw", trigger.ToString(), mode, new byte[] { mode, startResistance, effectForce, rangeForce, nearReleaseStrength, nearMiddleStrength, pressedStrength, frequency }, "PrepareRawTriggerEffect, game native trigger mode"); } catch { }
             if (physicalOutputStateMailbox.SetTrigger(trigger, triggerState))
             {
                 QueuePhysicalOutputUpdate();
@@ -8590,7 +8956,11 @@ namespace DS4Windows.InputDevices
         internal bool TrySetXboxImpulseTriggerFeedback(object owner, byte left, byte right)
         {
             bool accepted = physicalOutputStateMailbox.TrySetXboxImpulse(owner, left, right, out bool changed);
-            if (changed) QueuePhysicalOutputUpdate();
+            if (changed)
+            {
+                try { DS4Windows.TriggerEffectLogger.LogEffect("xbox-impulse", "Left+Right", left, new byte[] { left, right }, "TrySetXboxImpulseTriggerFeedback"); } catch { }
+                QueuePhysicalOutputUpdate();
+            }
             return accepted;
         }
 

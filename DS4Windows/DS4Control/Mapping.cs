@@ -1,4 +1,4 @@
-/*
+﻿/*
 DS4Windows
 Copyright (C) 2023  Travis Nickles
 
@@ -2925,6 +2925,24 @@ namespace DS4Windows
             switch2MappedStickMouseFrames[device] = default;
 
             cState.calculateStickAngles();
+            // On-screen keyboard: while it is open, its own input
+            // handling runs first, special actions do not fire (so a
+            // navigation button cannot also trigger its mapped action),
+            // and the mapped output is neutralized at the end of this
+            // function, so typing does not also drive the game.
+            bool oskActive = OnScreenKeyboardState.IsActive(device);
+            // DS4 FIX (2026-11-04, Chuck: adaptive triggers keep
+            // running / vibrating / shifting while the keyboard is
+            // open): neutralizing mapped INPUT above is not enough,
+            // game feedback still drives the physical triggers. While
+            // the keyboard is open, suspend trigger effects and
+            // rumble to the physical controller, and restore the
+            // profile effects on close. Profile settings themselves
+            // are never changed, only the live output, and only
+            // while the keyboard is open.
+            UpdateOskTriggerEffects(device, oskActive, ctrl);
+            if (oskActive)
+                ProcessOnScreenKeyboardTick(device, cState);
             DS4StateFieldMapping fieldMapping = fieldMappings[device];
             fieldMapping.PopulateFieldMapping(cState, eState, tp,
                 leftIrThreshold: Global.
@@ -2947,8 +2965,32 @@ namespace DS4Windows
             // only field maps change, never the physical report snapshot.
             ReadAxisFlickCalibration(device, cState, MappedState, eState, tp,
                 fieldMapping, outputfieldMapping);
-            if (getProfileActionCount(device) > 0 || useTempProfile[device])
+            // PS combos still fire while the keyboard is open: if PS is
+            // held, MapCustomAction runs, so PS+Square / PS+any other
+            // Special Action works even with the keyboard shown. Without
+            // PS held, special actions stay blocked while typing.
+            if ((!oskActive || cState.PS) && (getProfileActionCount(device) > 0 || useTempProfile[device]))
                 MapCustomAction(device, cState, MappedState, eState, tp, ctrl, fieldMapping, outputfieldMapping);
+            // Switch Programs Alt-Tab navigation: while Alt is held
+            // by Switch Programs, D-pad left/right move in the Alt-Tab
+            // menu and Cross selects. Only while the menu is open, and
+            // never while the on-screen keyboard is active, whose own
+            // tick already consumed these buttons. The consumed buttons
+            // are cleared from both field maps here, after
+            // MapCustomAction, so a second press of the Switch Programs
+            // trigger itself still toggles Alt off in the same tick,
+            // while a held D-pad / Cross never also fires its normal
+            // profile action or game output between repeat steps.
+            if (!oskActive && SwitchPrograms.IsMenuOpen(device))
+            {
+                SwitchPrograms.ProcessNavigation(device, cState);
+                fieldMapping.buttons[(int)DS4Controls.DpadLeft] = false;
+                fieldMapping.buttons[(int)DS4Controls.DpadRight] = false;
+                fieldMapping.buttons[(int)DS4Controls.Cross] = false;
+                outputfieldMapping.buttons[(int)DS4Controls.DpadLeft] = false;
+                outputfieldMapping.buttons[(int)DS4Controls.DpadRight] = false;
+                outputfieldMapping.buttons[(int)DS4Controls.Cross] = false;
+            }
             //if (ctrl.DS4Controllers[device] == null) return;
 
             long switch2ProfileRevision =
@@ -3629,17 +3671,20 @@ namespace DS4Windows
                 out mouseDeltaX, out mouseDeltaY);
             int calibrationDelta = AdvanceFlickStickCalibration(device, tp,
                 ctrl.DS4Controllers[device], calibrationTimestamp);
-            SendMouseMovementWithCalibration(mouseDeltaX, mouseDeltaY, calibrationDelta);
-            if (switch2IrMouseWheelDelta != 0 ||
-                switch2IrMouseHorizontalWheelDelta != 0)
+            if (!oskActive)
             {
-                outputKBMHandler.PerformMouseWheelEvent(
-                    switch2IrMouseWheelDelta,
-                    switch2IrMouseHorizontalWheelDelta);
+                SendMouseMovementWithCalibration(mouseDeltaX, mouseDeltaY, calibrationDelta);
+                if (switch2IrMouseWheelDelta != 0 ||
+                    switch2IrMouseHorizontalWheelDelta != 0)
+                {
+                    outputKBMHandler.PerformMouseWheelEvent(
+                        switch2IrMouseWheelDelta,
+                        switch2IrMouseHorizontalWheelDelta);
+                }
             }
 
-            if (absMouseOut.Dirty ||
-                absMouseOut.previousDirty)
+            if (!oskActive && (absMouseOut.Dirty ||
+                absMouseOut.previousDirty))
             {
                 if (absMouseOut.Dirty)
                 {
@@ -3694,6 +3739,363 @@ namespace DS4Windows
                 absMouseOut.Dirty = false;
 
                 absMouseOut.CalculateAngle();
+            }
+
+            if (oskActive)
+                NeutralizeMappedState(MappedState);
+            if (SwitchPrograms.IsMenuOpen(device))
+            {
+                MappedState.DpadLeft = MappedState.DpadRight = MappedState.Cross = false;
+            }
+        }
+
+        private static void NeutralizeMappedState(DS4State state)
+        {
+            state.Square = state.Triangle = state.Circle = state.Cross = false;
+            state.DpadUp = state.DpadDown = state.DpadLeft = state.DpadRight = false;
+            state.L1 = state.L2Btn = state.L3 = state.R1 = state.R2Btn = state.R3 = false;
+            state.Share = state.Options = state.PS = state.Mute = false;
+            state.Touch1 = state.Touch2 = state.TouchButton = state.TouchRight =
+                state.TouchLeft = state.Touch1Finger = state.Touch2Fingers =
+                state.OutputTouchButton = false;
+            state.Capture = state.SideL = state.SideR = state.FnL = state.FnR =
+                state.BLP = state.BRP = false;
+            state.LX = state.LY = state.RX = state.RY = 128;
+            state.L2 = state.R2 = 0;
+            state.L2Raw = state.R2Raw = 0;
+            state.SASteeringWheelEmulationUnit = 0;
+        }
+
+        // On-screen keyboard input, one tick. Circle closes instantly
+        // (StopForDevice kills Python at once, no 2 s wait). Square
+        // and Cross repeat while held (350 ms delay, then 60 ms).
+        // L3/R2/Triangle stay edge-triggered. D-pad navigation repeats;
+        // joystick is one step per deflection, center reset required.
+        // L2 hold = shift. L3 = caps lock toggle. R2 = Enter (real send,
+        // not just the Enter key on the layout). Square = Backspace
+        // (real send). Circle closes, and the on-screen Hide button
+        // closes unconditionally. No Move button, no position cycling.
+        private static readonly bool[][] oskPrevButtons = new bool[Global.MAX_DS4_CONTROLLER_COUNT][];
+        // Hold repeat for Square (delete) and Cross (type): first press
+        // immediate, then 350 ms delay, then every 60 ms while held.
+        private static readonly DateTime[] oskSquareNext = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static readonly DateTime[] oskCrossNext = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
+        // Joystick single-step: last stick direction, reset to 0 when the
+        // stick returns to center. Holding the stick must NOT repeat.
+        private static readonly int[] oskStickPrevDx = new int[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static readonly int[] oskStickPrevDy = new int[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static bool OskPrev(int device, int slot)
+        {
+            if (oskPrevButtons[device] == null)
+                oskPrevButtons[device] = new bool[8];
+            return oskPrevButtons[device][slot];
+        }
+        private static void OskSetPrev(int device, int slot, bool value)
+        {
+            if (oskPrevButtons[device] == null)
+                oskPrevButtons[device] = new bool[8];
+            oskPrevButtons[device][slot] = value;
+        }
+
+        // DS4 FIX (2026-11-04): adaptive triggers while the keyboard
+        // is open. True only while the live output is suspended, so
+        // close restores exactly once, even if MapCustom runs for
+        // many frames after close.
+        private static readonly bool[] oskTriggerSuspended =
+            new bool[Global.MAX_DS4_CONTROLLER_COUNT];
+
+        private static void UpdateOskTriggerEffects(int device, bool oskActive, ControlService ctrl)
+        {
+            if (device < 0 || device >= oskTriggerSuspended.Length || ctrl == null)
+                return;
+            DS4Device dev = null;
+            try { dev = ctrl.DS4Controllers[device]; } catch { }
+            if (dev == null)
+                return;
+            if (oskActive && !oskTriggerSuspended[device])
+            {
+                try
+                {
+                    dev.PrepareTriggerEffect(
+                        DS4Windows.InputDevices.TriggerId.LeftTrigger,
+                        DS4Windows.InputDevices.TriggerEffects.None,
+                        Global.L2OutputSettings[device].TrigEffectSettings);
+                    dev.PrepareTriggerEffect(
+                        DS4Windows.InputDevices.TriggerId.RightTrigger,
+                        DS4Windows.InputDevices.TriggerEffects.None,
+                        Global.R2OutputSettings[device].TrigEffectSettings);
+                    dev.setRumble(0, 0);
+                }
+                catch { }
+                oskTriggerSuspended[device] = true;
+            }
+            else if (!oskActive && oskTriggerSuspended[device])
+            {
+                try
+                {
+                    if (dev is DS4Windows.InputDevices.DualSenseDevice dsDev)
+                    {
+                        TriggerLabProfileEffectRestoration.ApplyToDevice(
+                            dsDev,
+                            Global.store.triggerLabSettings[device].Normalize(),
+                            Global.L2OutputSettings[device],
+                            Global.R2OutputSettings[device]);
+                    }
+                    else
+                    {
+                        dev.PrepareTriggerEffect(
+                            DS4Windows.InputDevices.TriggerId.LeftTrigger,
+                            Global.L2OutputSettings[device].TriggerEffect,
+                            Global.L2OutputSettings[device].TrigEffectSettings);
+                        dev.PrepareTriggerEffect(
+                            DS4Windows.InputDevices.TriggerId.RightTrigger,
+                            Global.R2OutputSettings[device].TriggerEffect,
+                            Global.R2OutputSettings[device].TrigEffectSettings);
+                    }
+                    dev.setRumble(0, 0);
+                }
+                catch { }
+                oskTriggerSuspended[device] = false;
+            }
+        }
+
+        private static void ProcessOnScreenKeyboardTick(int device, DS4State cState)
+        {
+            // REAL Python DualTouch keyboard: while it runs, DS4 only
+            // forwards DualSense events to the Python process over
+            // stdin. No C# key sends happen here anymore, and if the
+            // Python keyboard is not running, the state is closed
+            // instead of falling back to the old C# keyboard.
+            if (DualTouchKeyboardRunner.IsRunning(device))
+            {
+                // EXACT DualTouch (triton) keyboard: DS4 forwards raw
+                // DualSense state every tick and triton itself handles
+                // edges, highlights, hold-repeat, D-pad and stick
+                // navigation, and closing. Square / Triangle / Enter /
+                // L3 only highlight their key while held, they do NOT
+                // move the cursor (exact triton, Chuck''s 22:14 correction).
+                // Mapping: Triangle = Space, Circle = Close, Square =
+                // Backspace, Cross = type highlighted key, R2 = Enter,
+                // L2 = Shift, L3 = Caps, L1 = Left arrow through text,
+                // R1 = Right arrow through text. L1 / R1 likewise do NOT
+                // move the on-screen selection cursor; Python sends OS
+                // Left / Right arrows, and Python disables triton''s
+                // LB/RB pad-click synthesis so L1 / R1 do not type.
+                // While PS is held, NO button is sent, so PS + another
+                // button fires its Special Action instead of typing.
+                // Button bits must match ds4_main.py: 1 Cross, 2 Circle,
+                // 4 Square, 8 Triangle, 16 L3, 32/64/128/256 D-pad,
+                // 512 L1, 1024 R1. L2 / R2 travel as analog l2 / r2.
+                bool psHeld = cState.PS;
+                int btn = 0;
+                if (!psHeld)
+                {
+                    if (cState.Cross) btn |= 1;
+                    if (cState.Circle) btn |= 2;
+                    if (cState.Square) btn |= 4;
+                    if (cState.Triangle) btn |= 8;
+                    if (cState.L3) btn |= 16;
+                    if (cState.DpadUp) btn |= 32;
+                    if (cState.DpadDown) btn |= 64;
+                    if (cState.DpadLeft) btn |= 128;
+                    if (cState.DpadRight) btn |= 256;
+                    if (cState.L1) btn |= 512;
+                    if (cState.R1) btn |= 1024;
+                }
+                DualTouchKeyboardRunner.SendState(device, btn,
+                    cState.L2, cState.R2, cState.LX, cState.LY);
+                if (!psHeld && OnScreenKeyboardState.ConsumeTouchpadTap(device))
+                    DualTouchKeyboardRunner.SendTap(device);
+                return;
+            }
+            if (DualTouchKeyboardRunner.IsPending(device))
+            {
+                // Python is still starting: wait, do not type via C#.
+                return;
+            }
+            // Keyboard state is open but no Python keyboard is running
+            // and none is starting: close it. The C# typing path below
+            // is no longer reached while a keyboard is open; it stays
+            // in the file only as dormant code.
+            OnScreenKeyboardState.Close(device);
+            return;
+            DateTime now = DateTime.UtcNow;
+            int dx = 0, dy = 0;
+            // D-pad first, then left stick (either navigates).
+            if (cState.DpadLeft) dx -= 1;
+            if (cState.DpadRight) dx += 1;
+            if (cState.DpadUp) dy -= 1;
+            if (cState.DpadDown) dy += 1;
+            if (dx == 0 && dy == 0)
+            {
+                // Left stick: center 128, deadzone 40. Up is low LY.
+                if (cState.LX < 88) dx -= 1;
+                else if (cState.LX > 168) dx += 1;
+                if (cState.LY < 88) dy -= 1;
+                else if (cState.LY > 168) dy += 1;
+            }
+            OnScreenKeyboardState.TryMoveWithRepeat(device, dx, dy, now);
+
+            bool shiftHeld = cState.L2 >= 128 || cState.L2Btn;
+            OnScreenKeyboardState.SetShiftHeld(device, shiftHeld);
+            bool cross = cState.Cross;
+            bool circle = cState.Circle;
+            bool square = cState.Square;
+            bool l3 = cState.L3;
+            bool r2 = cState.R2 >= 128 || cState.R2Btn;
+            // DualTouch port triggers: R2 = Enter, L2 hold = Shift,
+            // L3 = Caps, Square = Backspace, X (Cross) = type the
+            // highlighted key, Circle = close. R2 Enter and Square
+            // Backspace are real sends, not just badges, and they
+            // mark the Enter/Backspace key pressed for visual feedback.
+            // Slots: 0 Cross, 1 Circle, 2 Square, 3 L3, 4 R2.
+            if (circle && !OskPrev(device, 1))
+                OnScreenKeyboardState.Close(device);
+            else if (OnScreenKeyboardState.ConsumeTouchpadTap(device))
+                ActivateOnScreenKeyboardKey(device, shiftHeld);
+            else if (r2 && !OskPrev(device, 4))
+            {
+                OnScreenKeyboardState.MarkKeyPressed(device, OnScreenKeyboardState.KeyKind.Enter);
+                TapMultiKeys(new List<ushort> { 0x0D }, DS4KeyType.None, false);
+                OnScreenKeyboardState.ClearModifierLatches(device);
+                OnScreenKeyboardState.ClearSelectMode(device);
+            }
+            else if (square && !OskPrev(device, 2))
+            {
+                OnScreenKeyboardState.MarkKeyPressed(device, OnScreenKeyboardState.KeyKind.Backspace);
+                TapMultiKeys(new List<ushort> { 0x08 }, DS4KeyType.None, false);
+            }
+            else if (l3 && !OskPrev(device, 3))
+                OnScreenKeyboardState.ToggleCaps(device);
+            else if (cross && !OskPrev(device, 0))
+                ActivateOnScreenKeyboardKey(device, shiftHeld);
+            OskSetPrev(device, 0, cross);
+            OskSetPrev(device, 1, circle);
+            OskSetPrev(device, 2, square);
+            OskSetPrev(device, 3, l3);
+            OskSetPrev(device, 4, r2);
+        }
+
+        private static void TapWithOskModifiers(int device, bool shiftHeld, bool includeCapsAsShift, ushort vk)
+        {
+            var mods = OnScreenKeyboardState.ModifierKeys(device, shiftHeld, includeCapsAsShift);
+            mods.Add(vk);
+            TapMultiKeys(mods, DS4KeyType.None, false);
+        }
+
+        private static void ActivateOnScreenKeyboardKey(int device, bool shiftHeld)
+        {
+            if (!OnScreenKeyboardState.IsActive(device))
+                return;
+            OnScreenKeyboardState.MarkPressed(device);
+            OnScreenKeyboardState.KeyDef key = OnScreenKeyboardState.CurrentKey(device);
+            switch (key.Kind)
+            {
+                case OnScreenKeyboardState.KeyKind.Hide:
+                    // DualTouch port: Hide replaces Move and closes
+                    // unconditionally. No Move position cycling at all.
+                    OnScreenKeyboardState.Close(device);
+                    break;
+                case OnScreenKeyboardState.KeyKind.Caps:
+                    OnScreenKeyboardState.ToggleCaps(device);
+                    break;
+                case OnScreenKeyboardState.KeyKind.ShiftHold:
+                    // Layout Shift key: latches shift for the next key
+                    // only. L2 hold is still the primary shift.
+                    OnScreenKeyboardState.SetShiftLatch(device);
+                    break;
+                case OnScreenKeyboardState.KeyKind.EmojiToggle:
+                    OnScreenKeyboardState.ToggleEmojiPanel(device);
+                    break;
+                case OnScreenKeyboardState.KeyKind.SymbolsToggle:
+                    OnScreenKeyboardState.ToggleSymbolsPanel(device);
+                    break;
+                case OnScreenKeyboardState.KeyKind.Symbol:
+                    OnScreenKeyboardState.SendUnicodeText(key.Text);
+                    OnScreenKeyboardState.ToggleSymbolsPanel(device);
+                    break;
+                case OnScreenKeyboardState.KeyKind.CtrlKey:
+                    OnScreenKeyboardState.ToggleCtrlLatch(device);
+                    break;
+                case OnScreenKeyboardState.KeyKind.AltKey:
+                    OnScreenKeyboardState.ToggleAltLatch(device);
+                    break;
+                case OnScreenKeyboardState.KeyKind.WinKey:
+                    OnScreenKeyboardState.ToggleWinLatch(device);
+                    break;
+                case OnScreenKeyboardState.KeyKind.SelectKey:
+                    OnScreenKeyboardState.ToggleSelectMode(device);
+                    break;
+                case OnScreenKeyboardState.KeyKind.PasteKey:
+                    // Paste normally, Copy when Shift held. Normal
+                    // SendInput taps, no clipboard tricks.
+                    if (shiftHeld || OnScreenKeyboardState.ShiftLatch(device))
+                        TapMultiKeys(new List<ushort> { 0x11, 0x43 }, DS4KeyType.None, false);
+                    else
+                        TapMultiKeys(new List<ushort> { 0x11, 0x56 }, DS4KeyType.None, false);
+                    OnScreenKeyboardState.ClearModifierLatches(device);
+                    OnScreenKeyboardState.ClearSelectMode(device);
+                    break;
+                case OnScreenKeyboardState.KeyKind.Tab:
+                    TapWithOskModifiers(device, shiftHeld, false, 0x09);
+                    OnScreenKeyboardState.ClearModifierLatches(device);
+                    OnScreenKeyboardState.ClearSelectMode(device);
+                    break;
+                case OnScreenKeyboardState.KeyKind.Emoji:
+                    // Emoji panel closes back to letters after typing
+                    // one emoji, so the user is not stuck in the panel.
+                    OnScreenKeyboardState.SendUnicodeText(key.Text);
+                    OnScreenKeyboardState.ToggleEmojiPanel(device);
+                    break;
+                case OnScreenKeyboardState.KeyKind.Space:
+                    TapWithOskModifiers(device, shiftHeld, false, 0x20);
+                    OnScreenKeyboardState.ClearModifierLatches(device);
+                    OnScreenKeyboardState.ClearSelectMode(device);
+                    break;
+                case OnScreenKeyboardState.KeyKind.Backspace:
+                    TapWithOskModifiers(device, shiftHeld, false, 0x08);
+                    OnScreenKeyboardState.ClearModifierLatches(device);
+                    OnScreenKeyboardState.ClearSelectMode(device);
+                    break;
+                case OnScreenKeyboardState.KeyKind.Enter:
+                    TapWithOskModifiers(device, shiftHeld, false, 0x0D);
+                    OnScreenKeyboardState.ClearModifierLatches(device);
+                    OnScreenKeyboardState.ClearSelectMode(device);
+                    break;
+                case OnScreenKeyboardState.KeyKind.Function:
+                    TapWithOskModifiers(device, shiftHeld, false, key.Vk);
+                    OnScreenKeyboardState.ClearModifierLatches(device);
+                    OnScreenKeyboardState.ClearSelectMode(device);
+                    break;
+                case OnScreenKeyboardState.KeyKind.ArrowLeft:
+                case OnScreenKeyboardState.KeyKind.ArrowDown:
+                case OnScreenKeyboardState.KeyKind.ArrowUp:
+                case OnScreenKeyboardState.KeyKind.ArrowRight:
+                    if (key.Vk != 0)
+                    {
+                        // Select mode: Shift+Arrow extends a selection.
+                        // Arrows do not clear Select mode or latches.
+                        var arrowMods = OnScreenKeyboardState.ModifierKeys(device, shiftHeld, false);
+                        if (OnScreenKeyboardState.SelectModeOn(device) && !arrowMods.Contains(0x10))
+                            arrowMods.Add(0x10);
+                        arrowMods.Add(key.Vk);
+                        TapMultiKeys(arrowMods, DS4KeyType.None, false);
+                    }
+                    break;
+                case OnScreenKeyboardState.KeyKind.Char:
+                default:
+                    if (key.Vk != 0)
+                    {
+                        // Shift/Caps + key, so letters go uppercase
+                        // and numbers go to shifted symbols, plus any
+                        // latched Ctrl/Alt/Win modifiers.
+                        var mods = OnScreenKeyboardState.ModifierKeys(device, shiftHeld, true);
+                        mods.Add(key.Vk);
+                        TapMultiKeys(mods, DS4KeyType.None, false);
+                        OnScreenKeyboardState.ClearModifierLatches(device);
+                        OnScreenKeyboardState.ClearSelectMode(device);
+                    }
+                    break;
             }
         }
 
@@ -4967,6 +5369,23 @@ namespace DS4Windows
                         continue;
                     }
 
+                    // DS4 FIX 2026-11-04 (D-pad still dead): while the
+                    // Alt-Tab menu is open, PS+D-pad already fires
+                    // other special actions, PS+Right = Switch mic,
+                    // PS+Left = Battery check, PS+Up/Down = volume.
+                    // Those Key actions press/release Alt themselves
+                    // and can close the Alt-Tab menu and steal the
+                    // D-pad before ProcessNavigation runs. While
+                    // menu-open, only SwitchPrograms itself passes
+                    // here, so D-pad navigation wins. This does not
+                    // change any action definition, only its firing
+                    // while the Alt-Tab menu is open.
+                    if (SwitchPrograms.IsMenuOpen(device) &&
+                        action.typeID != SpecialAction.ActionTypeId.SwitchPrograms)
+                    {
+                        continue;
+                    }
+
                     double time = 0.0;
                     //If a key or button is assigned to the trigger, a key special action is used like
                     //a quick tap to use and hold to use the regular custom button/key
@@ -5282,29 +5701,105 @@ namespace DS4Windows
                                 {
                                     actionDone[index].dev[device] = true;
                                     untriggerindex[device] = index;
-                                    ushort key;
-                                    ushort.TryParse(action.details, out key);
+                                    bool multiSequence;
+                                    List<ushort> multiKeys = ParseMultiKeys(action.details, out multiSequence);
+                                    if (multiKeys.Count == 0)
+                                    {
+                                        // Legacy single-key fallback, exactly as before.
+                                        ushort legacyKey;
+                                        ushort.TryParse(action.details, out legacyKey);
+                                        if (legacyKey != 0)
+                                            multiKeys.Add(legacyKey);
+                                    }
                                     if (uTriggerCount == 0)
                                     {
-                                        SyntheticState.KeyPresses kp;
-                                        if (!deviceState[device].keyPresses.TryGetValue(key, out kp))
+                                        // Held: press all keys at once, every
+                                        // tick, through the synthetic path.
+                                        // A sequence flag is ignored here;
+                                        // held actions always press all.
+                                        foreach (ushort key in multiKeys)
                                         {
-                                            deviceState[device].keyPresses[key] = kp = new SyntheticState.KeyPresses();
-                                            deviceState[device].nativeKeyAlias[key] = (ushort)Global.outputKBMMapping.GetRealEventKey(key);
+                                            SyntheticState.KeyPresses kp;
+                                            if (!deviceState[device].keyPresses.TryGetValue(key, out kp))
+                                            {
+                                                deviceState[device].keyPresses[key] = kp = new SyntheticState.KeyPresses();
+                                                deviceState[device].nativeKeyAlias[key] = (ushort)Global.outputKBMMapping.GetRealEventKey(key);
+                                            }
+
+                                            if (action.keyType.HasFlag(DS4KeyType.ScanCode))
+                                                kp.current.scanCodeCount++;
+                                            else
+                                                kp.current.vkCount++;
+
+                                            kp.current.repeatCount++;
                                         }
-
-                                        if (action.keyType.HasFlag(DS4KeyType.ScanCode))
-                                            kp.current.scanCodeCount++;
-                                        else
-                                            kp.current.vkCount++;
-
-                                        kp.current.repeatCount++;
                                     }
-                                    else if (action.keyType.HasFlag(DS4KeyType.ScanCode))
-                                        outputKBMHandler.PerformKeyPressAlt(key);
+                                    else if (multiSequence)
+                                    {
+                                        // Toggle + sequence: one tap, keys
+                                        // one after another, then released.
+                                        // The unload branch skips release
+                                        // for sequence actions.
+                                        TapMultiKeys(multiKeys, action.keyType, true);
+                                    }
                                     else
-                                        outputKBMHandler.PerformKeyPress(key);
+                                    {
+                                        // Toggle: press all at once, hold
+                                        // until the unload trigger releases.
+                                        PressMultiKeysToggle(multiKeys, action.keyType);
+                                    }
                                 }
+                            }
+                            else if (action.typeID == SpecialAction.ActionTypeId.SystemAction)
+                            {
+                                actionFound = true;
+
+                                // Tap once per press, never repeat while held.
+                                if (!actionDone[index].dev[device])
+                                {
+                                    actionDone[index].dev[device] = true;
+                                    PerformSystemAction(action.details);
+                                }
+                            }
+                            else if (action.typeID == SpecialAction.ActionTypeId.SwitchPrograms)
+                            {
+                                actionFound = true;
+
+                                // Press again to toggle off, or let the
+                                // watchdog release Alt on click, focus
+                                // change, Esc, or timeout. Cycle Programs
+                                // is untouched; this is a separate action.
+                                if (!actionDone[index].dev[device])
+                                {
+                                    actionDone[index].dev[device] = true;
+                                    SwitchPrograms.Toggle(device,
+                                        k => outputKBMHandler.PerformKeyPress(k),
+                                        k => outputKBMHandler.PerformKeyRelease(k),
+                                        () => outputKBMHandler.Sync(),
+                                        outputKBMMapping.KEY_LALT, outputKBMMapping.KEY_TAB,
+                                        outputKBMMapping.KEY_LEFT, outputKBMMapping.KEY_RIGHT);
+                                }
+                            }
+                            else if (action.typeID == SpecialAction.ActionTypeId.OnScreenKeyboard)
+                            {
+                                actionFound = true;
+
+                                // Special Action toggles: open if closed,
+                                // close if open. Close stops Python via
+                                // the KeyboardClosed handler, no fallback.
+                                if (!actionDone[index].dev[device])
+                                {
+                                    actionDone[index].dev[device] = true;
+                                    if (OnScreenKeyboardState.IsActive(device))
+                                        OnScreenKeyboardState.Close(device);
+                                    else
+                                    {
+                                        bool useTouchpadCursor = !string.IsNullOrEmpty(action.details) &&
+                                            action.details.IndexOf("TouchpadCursor", StringComparison.Ordinal) >= 0;
+                                        OnScreenKeyboardState.Open(device, useTouchpadCursor);
+                                    }
+                                }
+
                             }
                             else if (action.typeID == SpecialAction.ActionTypeId.DisconnectBT)
                             {
@@ -5350,7 +5845,9 @@ namespace DS4Windows
                                         batteryHoldTrans[device] = getTransitionedColor(ref empty, ref full, d.Battery);
                                         lastColor[device] = d.LightBarColor;
                                         DS4LightBar.BatteryHoldColor[device] = batteryHoldTrans[device];
-                                        DS4LightBar.BatteryHoldUntil[device] = DateTime.UtcNow.AddSeconds(1);
+                                        DS4LightBar.BatteryHoldUntil[device] = DateTime.UtcNow.AddSeconds(3);
+                                        DS4LightBar.BatteryHoldSnap[device] = true;
+                                        AppLogger.LogToGui($"LED battery check: controller {device + 1} battery {d.Battery}% color {batteryHoldTrans[device].red},{batteryHoldTrans[device].green},{batteryHoldTrans[device].blue} hold 3s snap, ownership forced", false);
                                     }
                                     if (DS4LightBar.BatteryHoldUntil[device] != DateTime.MinValue && DateTime.UtcNow < DS4LightBar.BatteryHoldUntil[device])
                                     {
@@ -5410,20 +5907,34 @@ namespace DS4Windows
                                 actionFound = true;
                                 if (actionDone[index].dev[device])
                                 {
-                                    // Hold for 3 seconds no matter what, even after
+                                    // Hold for 1 second no matter what, even after
                                     // release: DS4LightBar enforces the color every tick.
                                     if (DS4LightBar.BatteryHoldUntil[device] != DateTime.MinValue && DateTime.UtcNow < DS4LightBar.BatteryHoldUntil[device])
                                     {
                                         DS4LightBar.forcedColor[device] = batteryHoldTrans[device];
                                         DS4LightBar.forcelight[device] = true;
                                     }
-                                    else if (DS4LightBar.BatteryHoldUntil[device] != DateTime.MinValue)
+                                    else
                                     {
+                                        // 2026-11-01 fix, one battery check only bug:
+                                        // DS4LightBar already clears BatteryHoldUntil
+                                        // to MinValue when the hold expires, so the
+                                        // old else-if (hold != MinValue) never ran
+                                        // after the first check, actionDone stayed
+                                        // true forever, and the next press was
+                                        // ignored completely, no log, no LED, no
+                                        // notification, until the controller was
+                                        // restarted. Reset unconditionally once
+                                        // the trigger is released and the hold
+                                        // is not active, whether the hold was
+                                        // cleared by the tick or not.
+                                        // Fade logic is untouched here.
                                         // Timer done: original base reset only.
                                         // forcelight=false lets normal lightbar logic
                                         // return to custom color if enabled, else
                                         // profile selected color.
                                         DS4LightBar.BatteryHoldUntil[device] = DateTime.MinValue;
+                                        DS4LightBar.BatteryHoldSnap[device] = false;
                                         fadetimer[device] = 0;
                                     /*if (prevFadetimer[device] == fadetimer[device])
                                     {
@@ -5473,12 +5984,20 @@ namespace DS4Windows
                                 {
                                     actionDone[index].dev[device] = true;
                                     untriggerindex[device] = -1;
-                                    ushort key;
-                                    ushort.TryParse(action.details, out key);
-                                    if (action.keyType.HasFlag(DS4KeyType.ScanCode))
-                                        outputKBMHandler.PerformKeyReleaseAlt(key);
-                                    else
-                                        outputKBMHandler.PerformKeyRelease(key);
+                                    bool unloadSequence;
+                                    List<ushort> unloadKeys = ParseMultiKeys(action.details, out unloadSequence);
+                                    if (unloadKeys.Count == 0)
+                                    {
+                                        ushort legacyKey;
+                                        ushort.TryParse(action.details, out legacyKey);
+                                        if (legacyKey != 0)
+                                            unloadKeys.Add(legacyKey);
+                                    }
+                                    // Sequence taps already released every
+                                    // key; releasing again is harmless but
+                                    // unnecessary, so skip it.
+                                    if (!unloadSequence)
+                                        ReleaseMultiKeysToggle(unloadKeys, action.keyType);
                                 }
                             }
                             else if (action.typeID == SpecialAction.ActionTypeId.XboxGameDVR || action.typeID == SpecialAction.ActionTypeId.MultiAction)
@@ -5736,6 +6255,159 @@ namespace DS4Windows
                         actionDone[index].dev[device] = false;
                 }
             }
+        }
+
+        // Multi-key Press / Toggle Key helpers. Details format:
+        // "17,65" (Ctrl+C), or "17,65;Sequence" for a sequential tap
+        // on toggle actions. No limit on how many keys. A single key
+        // "65" parses the same as before, so old actions keep working.
+        internal static List<ushort> ParseMultiKeys(string details, out bool sequence)
+        {
+            sequence = false;
+            List<ushort> keys = new List<ushort>();
+            if (string.IsNullOrEmpty(details))
+                return keys;
+            string d = details;
+            if (d.Contains(";"))
+            {
+                string[] parts = d.Split(';');
+                d = parts[0];
+                if (parts.Length > 1 && parts[1].Trim().StartsWith("Sequence", StringComparison.Ordinal))
+                    sequence = true;
+            }
+            foreach (string token in d.Split(','))
+            {
+                if (ushort.TryParse(token.Trim(), out ushort k) && k != 0 && !keys.Contains(k))
+                    keys.Add(k);
+            }
+            return keys;
+        }
+
+        internal static void PressMultiKeysToggle(List<ushort> keys, DS4KeyType keyType)
+        {
+            foreach (ushort k in keys)
+            {
+                if (keyType.HasFlag(DS4KeyType.ScanCode))
+                    outputKBMHandler.PerformKeyPressAlt(k);
+                else
+                    outputKBMHandler.PerformKeyPress(k);
+            }
+        }
+
+        internal static void ReleaseMultiKeysToggle(List<ushort> keys, DS4KeyType keyType)
+        {
+            foreach (ushort k in keys)
+            {
+                if (keyType.HasFlag(DS4KeyType.ScanCode))
+                    outputKBMHandler.PerformKeyReleaseAlt(k);
+                else
+                    outputKBMHandler.PerformKeyRelease(k);
+            }
+        }
+
+        // A tap (press, hold briefly, release) run on a background task,
+        // so the down state is synced across mapping ticks instead of
+        // being pressed and released inside a single tick.
+        internal static void TapMultiKeys(List<ushort> keys, DS4KeyType keyType, bool sequential)
+        {
+            List<ushort> snapshot = new List<ushort>(keys);
+            Task.Factory.StartNew(() =>
+            {
+                try
+                {
+                    if (sequential)
+                    {
+                        foreach (ushort k in snapshot)
+                        {
+                            if (keyType.HasFlag(DS4KeyType.ScanCode))
+                                outputKBMHandler.PerformKeyPressAlt(k);
+                            else
+                                outputKBMHandler.PerformKeyPress(k);
+                            Thread.Sleep(50);
+                            if (keyType.HasFlag(DS4KeyType.ScanCode))
+                                outputKBMHandler.PerformKeyReleaseAlt(k);
+                            else
+                                outputKBMHandler.PerformKeyRelease(k);
+                            Thread.Sleep(20);
+                        }
+                    }
+                    else
+                    {
+                        PressMultiKeysToggle(snapshot, keyType);
+                        Thread.Sleep(50);
+                        for (int i = snapshot.Count - 1; i >= 0; i--)
+                        {
+                            ushort k = snapshot[i];
+                            if (keyType.HasFlag(DS4KeyType.ScanCode))
+                                outputKBMHandler.PerformKeyReleaseAlt(k);
+                            else
+                                outputKBMHandler.PerformKeyRelease(k);
+                        }
+                    }
+                }
+                catch { }
+            });
+        }
+
+        // System Actions: preset name to virtual keys. Volume keys go
+        // through GetRealEventKey so FakerInput sends them as enhanced
+        // media keys; other combos use raw virtual keys, like Press Key.
+        internal static bool TryGetSystemActionKeys(string details, out List<ushort> keys, out bool isVolume)
+        {
+            keys = new List<ushort>();
+            isVolume = false;
+            if (string.IsNullOrEmpty(details))
+                return false;
+            string d = details;
+            if (d.StartsWith("Custom:", StringComparison.Ordinal))
+            {
+                bool seq;
+                keys = ParseMultiKeys(d.Substring("Custom:".Length), out seq);
+                return keys.Count > 0;
+            }
+            switch (d)
+            {
+                case "VolumeUp": keys = new List<ushort> { 0xAF }; isVolume = true; return true;
+                case "VolumeDown": keys = new List<ushort> { 0xAE }; isVolume = true; return true;
+                case "VolumeMute": keys = new List<ushort> { 0xAD }; isVolume = true; return true;
+                // Copy/Paste removed from Special Actions (DualTouch
+                // port): they live on the keyboard itself (Paste key,
+                // Copy when Shift held). Other System Actions below
+                // are untouched. A saved Copy/Paste System Action now
+                // returns false here and does nothing.
+                case "Cut": keys = new List<ushort> { 17, 88 }; return true;
+                case "Undo": keys = new List<ushort> { 17, 90 }; return true;
+                case "Redo": keys = new List<ushort> { 17, 89 }; return true;
+                case "SelectAll": keys = new List<ushort> { 17, 65 }; return true;
+                case "Save": keys = new List<ushort> { 17, 83 }; return true;
+                case "CloseWindow": keys = new List<ushort> { 18, 115 }; return true;
+                default: return false;
+            }
+        }
+
+        internal static void PerformSystemAction(string details)
+        {
+            if (!TryGetSystemActionKeys(details, out List<ushort> keys, out bool isVolume))
+                return;
+            if (isVolume)
+            {
+                // One volume key, tapped through the real event key.
+                ushort vk = keys[0];
+                uint real = Global.outputKBMMapping.GetRealEventKey(vk);
+                ushort sendKey = real != 0 ? (ushort)real : vk;
+                Task.Factory.StartNew(() =>
+                {
+                    try
+                    {
+                        outputKBMHandler.PerformKeyPress(sendKey);
+                        Thread.Sleep(50);
+                        outputKBMHandler.PerformKeyRelease(sendKey);
+                    }
+                    catch { }
+                });
+                return;
+            }
+            TapMultiKeys(keys, DS4KeyType.None, false);
         }
 
         private static void ReleaseActionKeys(SpecialAction action, int device)

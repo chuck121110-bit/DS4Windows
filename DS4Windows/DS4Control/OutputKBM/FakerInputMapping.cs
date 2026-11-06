@@ -1,4 +1,4 @@
-﻿/*
+/*
 DS4Windows
 Copyright (C) 2023  Travis Nickles
 
@@ -48,6 +48,9 @@ namespace DS4Windows.DS4Control
 
             KEY_TAB = (uint)KeyboardKey.Tab;
             KEY_LALT = (uint)KeyboardModifier.LAlt | FakerInputHandler.MODIFIER_MASK;
+            // DS4 FIX 2026-11-04: arrow keys must be KeyboardKey values, not VK codes, for FakerInput.
+            KEY_LEFT = (uint)KeyboardKey.LeftArrow;
+            KEY_RIGHT = (uint)KeyboardKey.RightArrow;
             WHEEL_TICK_DOWN = -1; WHEEL_TICK_UP = 1;
             macroKeyTranslate = true;
         }

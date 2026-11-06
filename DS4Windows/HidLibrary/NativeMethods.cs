@@ -146,6 +146,7 @@ namespace DS4Windows
         internal const int DICS_DISABLE = 2;
         internal const int DICS_FLAG_GLOBAL = 1;
         internal const int DIF_PROPERTYCHANGE = 0x12;
+        internal const int DIF_REMOVE = 0x05;
 
         internal const int MAX_DEV_LEN = 1000;
         internal const int SPDRP_ADDRESS = 0x1c;

@@ -1,0 +1,47 @@
+PROMPT FOR THE NEXT AI - DS4Windows LED bar and mic button fix
+Copy this whole prompt into a new chat / new AI, with the DS4Windows-stock project open. Do not start coding until you have done the research steps below.
+
+CONTEXT
+- User: Chuck, timezone America/New_York, voice-to-text, reply in English, short messages, text only, no artifact widgets, no file links unless he explicitly asks for a specific file.
+- Project root on his PC: C:\Users\Chuck\DS4Windows-stock
+  Fork: chuck121110-bit/DS4Windows, branch main. Do NOT build from C:\Users\Chuck\DS4Windows-source.
+  Read AGENT.md in that root first, it has the full project handoff, rules, PC access, build and deploy steps.
+- PC: Tailscale hostname chuck, 100.79.213.117, SSH, DS4 install C:\Program Files\DS4Windows\DS4Windows.exe, log C:\Users\Chuck\AppData\Roaming\DS4Windows\Logs\ds4windows_log.txt.
+- Build: dotnet publish DS4WindowsWPF.sln -c Release -r win-x64 --self-contained true. Publish output is bin\x64\Release\net8.0-windows10.0.19041.0\win-x64\publish. Deploy must copy the FULL publish folder, exe AND DLL, not just exe. Restart DS4 only via Scheduled Task "DS4Windows", never launch a second DS4Windows.exe. Never restart the whole PC unless Chuck explicitly asks in that turn.
+- Profile: DualSense, Color 4,5,5, LightbarMode DS4Win, MAC 50:EE:32:7B:BA:FB. Do not change his profile light bar color without explicit say-so in that turn. Do not touch profiles or Actions.xml unless he explicitly asks in that turn.
+- Latest build before this prompt: Nov 5 19:11 EST, exe 569,344 bytes, dll 11,180,544 bytes, DS4 PID 19956. Do not claim anything works until Chuck tests it himself.
+
+ISSUE TO FIX - READ CAREFULLY, THIS IS THE WHOLE BUG
+1. LED bar is not fading in when I do a battery check.
+2. LED bar is not fading out after a battery check, it is staying stuck on the battery color, it will not fade out.
+3. LED bar will not reset to the profile color. It will not do the profile color, it will not fade in to the profile color.
+4. Profile will not fade in when the controller connects, or when it switches to a different profile.
+5. Mic button is not working. I tested the microphone now, it did not work. The mic mute button click should turn the orange LED on, mic muted, and it should stay orange, not flash off. Click again, orange off, profile color back, mic unmuted.
+
+EXPECTED BEHAVIOR - THIS IS THE SPEC, DO NOT GUESS
+- Battery check, PS+Left: fade in to the battery color over 600 ms, hold the battery color for 3 seconds, then fade out from the battery color into the profile color or custom color over 420 ms, no matter what, and reset to the profile color or custom color. Battery is 100%, so battery color should be pure green 0,255,0. Empty color is red 255,0,0, full color is green 0,255,0, from Actions.xml, Action "Check Battery Life", Trigger Left/PS, Type BatteryCheck, LED force True.
+- Connect / profile switch: DS4 must not set blue, firmware blue fades out on its own, then only the profile color fades in over 600 ms, to profile color 4,5,5. This connect fade is CUSTOM, it is not in original DS4Windows stock, stock just sets the color, so do not look for it in stock, fix our custom code.
+- LED ownership: DS4 LED should be above anything else controlling the controller. DS4 should win over Steam, game, VIIPER, anything else, no matter what, especially during a battery check.
+- Mic button: physical mute button under the PS button. Profile DualSenseMuteButtonLightEnabled should be True, MutesMicrophone True, MutesInputOutput True, MutesSpeaker False. Click once, orange on and stays on, mic muted. Click again, orange off, profile color back, mic unmuted.
+
+WHAT WAS ALREADY TRIED, AND WHY IT DID NOT WORK - DO NOT REPEAT THESE BLINDLY
+- Nov 5 18:14 LED fix: battery hold 1s to 3s, snap to green, no 600 ms fade, LED log lines, mic orange via direct BT report. That broke fade-in, battery check jumped straight to green.
+- Nov 5 18:55 fade-in fix: explicit fade-in, profile to battery over 600 ms, hold 3s, fade-out 420 ms, connect fade black to profile over 600 ms, restart fade if first physical send was late. Chuck said battery fading was fixed after this, but connect / profile fade-in still did not work.
+- Nov 5 19:11 ownership fix: fade clock freezes until first successful physical Bluetooth publish, hold extends to 3s of real published color, fade-out starts from full battery color into profile color, mic cache now takes MuteLedOverride every merge, failed mute send re-queued, profile file on disk was found False and fixed to True. Chuck still reports: connect / profile fade-in does not work, mic button does not work, battery check LED does not force no matter what Steam does.
+- Steam note: Steam had held the physical controller since before connect, log warning "Automatic Steam Input reclaim skipped because restarting this active controller can cause repeated disconnects. Reconnect the controller or restart Steam after enabling HidHide if Steam already held it." Steam was restarted Nov 5 18:31, PID 3324, so it should now only see the virtual controller via HidHide, but verify this again, do not assume it.
+- Possible root causes already found in code, check them again: first Bluetooth send often failed while transport was coming up, log published=False, so a wall-clock fade expired unseen and the controller only saw the final color, a snap. The Bluetooth speaker cache kept the old mic byte and copied it every 10 ms, wiping orange right after the direct send. The game's native MicLed=0 overwrote orange every frame. Battery hold expired in software while sends failed. DS4 ownership only forced green inside DS4's own reports, Steam writes lightbar directly to the physical controller, bypassing DS4.
+
+HOW TO WORK - RESEARCH FIRST, THEN REVISE, EDIT, RESEARCH AGAIN, CHECK, DOUBLE CHECK
+- Do not start coding until you have researched first.
+- Research the actual code on the PC, not from memory: DS4LightBar.cs, DualSenseDevice.cs, Mapping.cs, ControlService.cs, ViiperOutDevice.cs, and the stock DS4Windows logic from hbashton/DS4Windows 5.0.12.0, and VIIPER original, for connect fade, battery check LED force, mic mute LED, and Steam / game lightbar ownership reclaim. Compare stock to our custom code, and say what stock does, what ours did wrong, and what was never in stock.
+- Revise, edit, research again, revise again, make sure, check, double check, before deploying. Every time you write code, check the written code for bugs, verify the build actually contains the change, and verify with log lines.
+- Build from the current PC tree, never overwrite with an older snapshot. Keep gyro drift fix, PS suppression, Switch Programs crossArmed fix, trigger block, keyboard overlay, rumble logger, and all other work in the tree.
+- If a fix needs Chuck to do a one-time step, e.g. reconnect the controller or restart Steam once, say so plainly, do not do it yourself without asking.
+- Keep reports short, text only, no artifact widgets, no file links, unless Chuck explicitly asks.
+
+LIVE TEST FOR CHUCK, AFTER DEPLOY
+1. Turn controller on, watch for a fade in to profile color over 600 ms.
+2. Switch to a different profile, watch for a fade in to that profile color.
+3. PS+Left battery check, watch for fade in to green over 600 ms, hold 3 seconds, fade out from green back to profile color over 420 ms, even with Steam running.
+4. Click the mic mute button once, orange should stay on, mic muted. Click again, orange off, profile color back, mic unmuted. Test the microphone in Windows Sound settings and in a game.
+Do not claim any of these work until Chuck says yes.

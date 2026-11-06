@@ -372,10 +372,12 @@ namespace DS4Windows
                             liveFrameAvailable, report, sampleOffset))
                     {
                         Interlocked.Increment(ref gameCarrierMisses);
+                        try { RumbleLogger.LogAudioHapticsActivity(sourceDisplayName, false); } catch { }
                         return false;
                     }
                     Volatile.Write(ref lastGameCarrierTimestamp, now);
                     Interlocked.Increment(ref gameCarrierMixes);
+                    try { RumbleLogger.LogAudioHapticsActivity(sourceDisplayName, true); RumbleLogger.SetAudioSource(sourceDisplayName); } catch { }
                     return true;
                 }
             }

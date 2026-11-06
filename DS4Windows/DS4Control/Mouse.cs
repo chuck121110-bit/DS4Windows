@@ -1,4 +1,4 @@
-﻿/*
+/*
 DS4Windows
 Copyright (C) 2023  Travis Nickles
 
@@ -127,6 +127,7 @@ namespace DS4Windows
 
         private bool wasTouched; // Needed to know when to check for Release activation
         private bool wasTouchButtonClicked = false; // Needed for Upper Touch on Release
+        private bool oskTapFromClick = false; // Touchpad click while OSK open already requested a tap; touchesEnded must not request a second one.
         private bool releaseButtonActive; // Flag to now if Release button mode is active
         private DateTime onReleaseTime; // Time Release button mode was first activated
 
@@ -1464,8 +1465,27 @@ namespace DS4Windows
         }
 
         private bool tempBool = false;
+        private bool TouchControlsEnabled()
+        {
+            return !Global.TouchToggleDisablesClicks[deviceNum] || Global.GetTouchActive(deviceNum);
+        }
         public virtual void touchesMoved(DS4Touchpad sender, TouchpadEventArgs arg)
         {
+            // DualTouch port: while the on-screen keyboard is open,
+            // the one DualSense touchpad moves the keyboard highlight,
+            // never the Windows cursor, and this holds for the whole
+            // time the keyboard is open, even if the user tries to
+            // toggle mouse movement back on. The toggle itself is also
+            // skipped in ControlService, so the pre-keyboard mouse
+            // state is restored on close. The saved touchpad-typing
+            // setting value itself is not changed here.
+            if (DS4Windows.OnScreenKeyboardState.IsActive(deviceNum))
+            {
+                if (arg.Touches != null && arg.Touches.Length > 0)
+                    DS4Windows.OnScreenKeyboardState.MoveByTouch(deviceNum,
+                        arg.Touches[0].DeltaX, arg.Touches[0].DeltaY);
+                return;
+            }
             s = dev.getCurrentStateRef();
 
             //Trace.WriteLine("TOUCHES_MOVED");
@@ -1604,6 +1624,19 @@ namespace DS4Windows
 
         public virtual void touchesBegan(DS4Touchpad sender, TouchpadEventArgs arg)
         {
+            if (DS4Windows.OnScreenKeyboardState.IsActive(deviceNum))
+            {
+                oskTapFromClick = false;
+                // Record the touch start for tap detection in
+                // touchesEnded, but emit no Windows mouse movement or
+                // click while the keyboard is open.
+                s = dev.getCurrentStateRef();
+                pastTime = arg.TimeStamp;
+                if (arg.Touches != null && arg.Touches.Length > 0)
+                    firstTouch.populate(arg.Touches[0].HwX, arg.Touches[0].HwY, arg.Touches[0].TouchID,
+                        arg.Touches[0].PreviousTouch);
+                return;
+            }
             TouchpadOutMode tempMode = Global.TouchOutMode[deviceNum];
             bool mouseMode = tempMode == TouchpadOutMode.Mouse;
             if (mouseMode)
@@ -1618,8 +1651,11 @@ namespace DS4Windows
                 trackballDXRemain = 0.0;
                 trackballDYRemain = 0.0;
 
-                cursor.touchesBegan(arg);
-                wheel.touchesBegan(arg);
+                if (TouchControlsEnabled())
+                {
+                    cursor.touchesBegan(arg);
+                    wheel.touchesBegan(arg);
+                }
             }
             else if (tempMode == TouchpadOutMode.MouseJoystick)
             {
@@ -1656,6 +1692,29 @@ namespace DS4Windows
         {
             //Trace.WriteLine("TOUCHES ENDED");
 
+            if (DS4Windows.OnScreenKeyboardState.IsActive(deviceNum))
+            {
+                // A touchpad CLICK already typed via touchButtonUp
+                // below; do not type a second time here.
+                if (oskTapFromClick)
+                {
+                    oskTapFromClick = false;
+                    return;
+                }
+                // A short, small tap selects the highlighted key; it
+                // never clicks in Windows while the keyboard is open.
+                s = dev.getCurrentStateRef();
+                byte tapSens = Global.getTapSensitivity(deviceNum);
+                if (tapSens != 0 && arg.Touches != null && arg.Touches.Length > 0 &&
+                    !arg.TouchButtonPressed &&
+                    arg.TimeStamp <= (pastTime + TimeSpan.FromMilliseconds((double)tapSens * 2)) &&
+                    Math.Abs(firstTouch.HwX - arg.Touches[0].HwX) < 10 &&
+                    Math.Abs(firstTouch.HwY - arg.Touches[0].HwY) < 10)
+                {
+                    DS4Windows.OnScreenKeyboardState.RequestTouchpadTap(deviceNum);
+                }
+                return;
+            }
             s = dev.getCurrentStateRef();
             wasTouched = true;
             profileSwipeTracking = false;
@@ -2057,6 +2116,13 @@ namespace DS4Windows
 
         private void TouchButtonCheckProcess(TouchpadEventArgs arg)
         {
+            if (!TouchControlsEnabled())
+            {
+                upperDown = leftDown = rightDown = multiDown = false;
+                touchButtonCurrentCandidate = TouchButtonModeCandidate.None;
+                return;
+            }
+
             bool activateTouchButton = false;
             TouchButtonActivationMode touchButtonMode = Global.TouchpadButtonMode[deviceNum];
             //TouchButtonActivationMode touchButtonMode = TouchButtonActivationMode.Release;
@@ -2207,6 +2273,14 @@ namespace DS4Windows
                 return;
             }
 
+            // Toggle off: block mouse clicks only. Do NOT clear OutputTouchButton
+            // here, so a game still sees the touchpad button via passthru when
+            // TouchpadClickPassthru is on. Movement and scroll are gated elsewhere.
+            if (!TouchControlsEnabled())
+            {
+                return;
+            }
+
             if (Global.GetDS4CSetting(deviceNum, DS4Controls.TouchLeft).IsDefault &&
                 leftDown)
             {
@@ -2262,6 +2336,18 @@ namespace DS4Windows
 
         public virtual void touchButtonUp(DS4Touchpad sender, TouchpadEventArgs arg)
         {
+            if (DS4Windows.OnScreenKeyboardState.IsActive(deviceNum))
+            {
+                // Touchpad CLICK while the keyboard is open: type the
+                // highlighted key, never a Windows mouse click, and
+                // never close the keyboard (only Circle/Hide close it).
+                pushed = DS4Controls.None;
+                upperDown = leftDown = rightDown = multiDown = false;
+                wasTouchButtonClicked = false;
+                oskTapFromClick = true;
+                DS4Windows.OnScreenKeyboardState.RequestTouchpadTap(deviceNum);
+                return;
+            }
             pushed = DS4Controls.None;
             upperDown = leftDown = rightDown = multiDown = false;
             wasTouchButtonClicked = true;
@@ -2278,6 +2364,13 @@ namespace DS4Windows
 
         public virtual void touchButtonDown(DS4Touchpad sender, TouchpadEventArgs arg)
         {
+            if (DS4Windows.OnScreenKeyboardState.IsActive(deviceNum))
+            {
+                // Press down alone types nothing yet; the click types
+                // on button up above. No Windows mouse click, ever,
+                // while the keyboard is open.
+                return;
+            }
             if (arg.Touches != null &&
                 arg.Touches.Length == 1 &&
                 (Global.LowerRCOn[deviceNum] && arg.Touches[0].HwX > (1920 * 3) / 4 && arg.Touches[0].HwY > (960 * 3) / 4))

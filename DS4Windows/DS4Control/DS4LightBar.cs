@@ -62,6 +62,146 @@ namespace DS4Windows
         // battery color for 3 seconds, then normal logic (original reset).
         public static DateTime[] BatteryHoldUntil = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
         public static DS4Color[] BatteryHoldColor = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
+        // 2026-11-05 LED fix: true only for a battery-check hold, which snaps
+        // to the battery color. A connect hold leaves this false, so its
+        // 600 ms fade from black to the profile color is untouched.
+        public static bool[] BatteryHoldSnap = new bool[Global.MAX_DS4_CONTROLLER_COUNT] { false, false, false, false, false, false, false, false };
+        // 2026-11-01 connect force: first tick after a gap (controller
+        // just turned back on) forces pure custom/profile color for
+        // 3 seconds, no battery/flash/charging/rainbow intermediate,
+        // so no yellow step sticks on connect.
+        public static DateTime[] ConnectHoldUntil = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
+        public static DS4Color[] ConnectHoldColor = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static DateTime[] lastLightBarTick = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static DS4Device[] lastLightBarDevice = new DS4Device[Global.MAX_DS4_CONTROLLER_COUNT];
+        // 2026-11-01 fade: color changes fade in/out over 600 ms instead
+        // of snapping, including blue firmware to profile on connect.
+        private static DS4Color[] fadeFromColor = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static DS4Color[] fadeToColor = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static DS4Color[] lastSentColor = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static bool[] lastSentValid = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static DateTime[] fadeStart = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static bool[] fading = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
+        // 2026-11-03 battery fade-out only: when a battery hold ends,
+        // fade explicitly from the battery color to the actual profile
+        // color (custom LED if set, else main profile color), never back
+        // to whatever color happened to be before. Connect fade-in,
+        // battery fade-in, and all other logic are untouched.
+        private static bool[] batteryHoldWasActive = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static bool[] batteryFadingOut = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
+        // 2026-11-05 fade-in regression fix: explicit fade-in states.
+        // Nov 5 snap (BatteryHoldSnap in skipFade) made a battery check
+        // jump straight to green, and the generic fade can miss the
+        // first tick on connect (lastSentValid false, or transport
+        // deferred so the 600 ms software fade expires before the
+        // first physical send). These states do not depend on the
+        // generic fade trigger: they start from a known from-color
+        // and interpolate to the target over 600 ms, every tick.
+        private static DateTime[] batteryFadeInStart = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static DS4Color[] batteryFadeInFrom = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static DS4Color[] batteryFadeInTo = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static bool[] batteryFadingIn = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static DateTime[] connectFadeInStart = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static DS4Color[] connectFadeInFrom = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static DS4Color[] connectFadeInTo = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static bool[] connectFadingIn = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static bool[] fadeInReplayed = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
+        // 2026-11-05 connect/battery fade fix: a software fade is only
+        // visible if its first physical BT send succeeds. The fade clock
+        // must not run while transport is still transitioning (the
+        // 19:01 connect direct send was color=0,0,0 published=False, and
+        // the 19:03 battery direct send was published=False). Freeze the
+        // fade start until DualSenseDevice reports a successful publish,
+        // and extend the hold while unpublished, so the visible hold is
+        // 3s of actual green/profile, not 3s of failed sends.
+        private static bool[] connectFadePublished = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static bool[] batteryFadePublished = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
+        // 2026-11-06 bounded publish grace. The freeze below used to push
+        // both the fade clock and the 3s hold forward on every tick with no
+        // limit, so a transport that never acknowledged a hold send froze
+        // the fade and extended the hold forever: the battery check could
+        // never fade out and the profile colour never came back. Measure the
+        // freeze against the first tick of the hold and give up after
+        // MaxHoldPublishGraceMs; the hold then runs its remaining 3s on
+        // wall-clock time and the fade-out always executes. Mapping creates
+        // battery holds directly, so hold entry is detected in updateLightBar
+        // rather than at creation.
+        private static DateTime[] batteryHoldEnteredAt = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
+        private const double MaxHoldPublishGraceMs = 3000.0;
+        private static bool[] ledDirectSendFailedLogged = new bool[Global.MAX_DS4_CONTROLLER_COUNT];
+        public static void MarkConnectFadePublished(int deviceNum)
+        {
+            if (deviceNum >= 0 && deviceNum < Global.MAX_DS4_CONTROLLER_COUNT) connectFadePublished[deviceNum] = true;
+        }
+        public static void MarkBatteryFadePublished(int deviceNum)
+        {
+            if (deviceNum >= 0 && deviceNum < Global.MAX_DS4_CONTROLLER_COUNT) batteryFadePublished[deviceNum] = true;
+        }
+        // DualSenseDevice uses these to decide whether a hold still needs a
+        // completion-aware (blocking) Bluetooth send. Once the first physical
+        // publish is known, later hold ticks only need the ordinary
+        // non-blocking cached publish, so the output worker is not stalled
+        // waiting up to a second for an acknowledgement on every tick.
+        public static bool IsBatteryFadePublished(int deviceNum) => deviceNum >= 0 && deviceNum < Global.MAX_DS4_CONTROLLER_COUNT && batteryFadePublished[deviceNum];
+        public static bool IsConnectFadePublished(int deviceNum) => deviceNum >= 0 && deviceNum < Global.MAX_DS4_CONTROLLER_COUNT && connectFadePublished[deviceNum];
+        public static bool IsLedDirectSendFailedLogged(int deviceNum) => deviceNum >= 0 && deviceNum < Global.MAX_DS4_CONTROLLER_COUNT && ledDirectSendFailedLogged[deviceNum];
+        public static void SetLedDirectSendFailedLogged(int deviceNum, bool value) { if (deviceNum >= 0 && deviceNum < Global.MAX_DS4_CONTROLLER_COUNT) ledDirectSendFailedLogged[deviceNum] = value; }
+        // Called from DualSenseDevice on the first direct BT send during
+        // a hold. If the software fade already expired before that first
+        // physical send, the controller never saw it (snap). Restart it
+        // once per hold, from the same from-color, so it is visible.
+        public static void RestartMissedFadeIn(int deviceNum)
+        {
+            if (deviceNum < 0 || deviceNum >= Global.MAX_DS4_CONTROLLER_COUNT) return;
+            if (fadeInReplayed[deviceNum]) return;
+            DateTime now = DateTime.UtcNow;
+            bool holdActive = BatteryHoldUntil[deviceNum] != DateTime.MinValue && now < BatteryHoldUntil[deviceNum];
+            if (!holdActive) return;
+            if (BatteryHoldSnap[deviceNum] && !batteryFadingIn[deviceNum] &&
+                batteryFadeInStart[deviceNum] != DateTime.MinValue &&
+                (now - batteryFadeInStart[deviceNum]).TotalMilliseconds >= 600.0)
+            {
+                batteryFadeInStart[deviceNum] = now;
+                batteryFadingIn[deviceNum] = true;
+                fadeInReplayed[deviceNum] = true;
+            }
+            else if (!BatteryHoldSnap[deviceNum] &&
+                connectFadeInStart[deviceNum] != DateTime.MinValue &&
+                (now - connectFadeInStart[deviceNum]).TotalMilliseconds >= 600.0)
+            {
+                // Old code required !connectFadingIn here, so while a fade
+                // was still running it could never restart, and after it
+                // expired there was nothing left to restart. Restart even
+                // if the flag is still set.
+                connectFadeInStart[deviceNum] = now;
+                connectFadingIn[deviceNum] = true;
+                fadeInReplayed[deviceNum] = true;
+            }
+        }
+        private static DateTime[] batteryFadeOutGraceUntil = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
+
+        // 2026-11-03 vibration + fade-out fix: a battery fade-out is a
+        // lightbar hold for transport purposes. The previous fade-out
+        // only changed the color in software; DualSenseDevice gated
+        // its direct BT control send on BatteryHoldUntil, which is
+        // already MinValue during fade-out, so the interpolated colors
+        // and the final profile color were left to the speaker-clocked
+        // path, which stalls when the VIIPER audio stream is waiting,
+        // and the BT cache kept the stale battery color. This accessor
+        // lets DualSenseDevice treat fade-out (plus a short grace after
+        // it, so the final profile color lands) as hold-active.
+        public static bool IsBatteryFadeOutActive(int deviceNum)
+        {
+            if (deviceNum < 0 || deviceNum >= Global.MAX_DS4_CONTROLLER_COUNT)
+                return false;
+            return batteryFadingOut[deviceNum] ||
+                (batteryFadeOutGraceUntil[deviceNum] != DateTime.MinValue &&
+                 DateTime.UtcNow < batteryFadeOutGraceUntil[deviceNum]);
+        }
+        private static DateTime[] batteryFadeOutStart = new DateTime[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static DS4Color[] batteryFadeOutFrom = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
+        private static DS4Color[] batteryFadeOutTo = new DS4Color[Global.MAX_DS4_CONTROLLER_COUNT];
+        private const double FadeDurationMs = 600.0;
         public static byte[] forcedFlash = new byte[Global.MAX_DS4_CONTROLLER_COUNT];
         internal const int PULSE_FLASH_DURATION = 2000;
         internal const double PULSE_FLASH_SEGMENTS = PULSE_FLASH_DURATION / 40;
@@ -70,6 +210,18 @@ namespace DS4Windows
 
         public static void updateLightBar(DS4Device device, int deviceNum)
         {
+            DateTime tickNow = DateTime.UtcNow;
+            // Fresh connect: first tick, a tick gap over 5 seconds,
+            // or a new device object for the slot. A profile switch
+            // never changes the device object and ticks keep coming,
+            // so it is never a fresh connect here, and its fade is
+            // untouched.
+            bool deviceChanged = !ReferenceEquals(lastLightBarDevice[deviceNum], device);
+            lastLightBarDevice[deviceNum] = device;
+            bool isFreshConnect = lastLightBarTick[deviceNum] == DateTime.MinValue ||
+                (tickNow - lastLightBarTick[deviceNum]) > TimeSpan.FromSeconds(5) ||
+                deviceChanged;
+            lastLightBarTick[deviceNum] = tickNow;
             DS4Color color = new DS4Color();
             bool useForceLight = forcelight[deviceNum];
             LightbarSettingInfo lightbarSettingInfo = getLightbarSettingsInfo(deviceNum);
@@ -335,11 +487,105 @@ namespace DS4Windows
                     color = openRGBColor;
                 }
 
+                // Connect uses the SAME path as a battery check, no
+                // separate connect fade. On a fresh connect, set a
+                // battery hold to the pure custom/profile color for
+                // 1 second, exactly like Mapping does for a battery
+                // check, so the hold below, its direct BT send, its
+                // generic fade, and its fade-out/grace machinery all
+                // run for connect too. A real battery hold already
+                // in progress is left alone. Resetting the last sent
+                // color to black here makes the generic color-change
+                // fade below (the same code a battery check uses)
+                // interpolate black to the profile/custom color,
+                // instead of skipping because the target equals a
+                // stale last sent color. No DS4 blue is forced;
+                // firmware blue fades out on its own first. A
+                // profile switch is never a fresh connect, so its
+                // perfect fade is untouched.
+                if (isFreshConnect && !defaultLight && useLightRoutine &&
+                    (BatteryHoldUntil[deviceNum] == DateTime.MinValue ||
+                     DateTime.UtcNow >= BatteryHoldUntil[deviceNum]))
+                {
+                    DS4Color connectTarget = lightModeInfo.useCustomLed
+                        ? lightModeInfo.m_CustomLed : getMainColor(deviceNum);
+                    BatteryHoldColor[deviceNum] = connectTarget;
+                    BatteryHoldUntil[deviceNum] = tickNow.AddSeconds(3);
+                    BatteryHoldSnap[deviceNum] = false;
+                    connectFadePublished[deviceNum] = false;
+                    batteryFadePublished[deviceNum] = false;
+                    ledDirectSendFailedLogged[deviceNum] = false;
+                    // Explicit connect fade-in: black to profile over 600 ms.
+                    connectFadeInFrom[deviceNum] = new DS4Color(0, 0, 0);
+                    connectFadeInTo[deviceNum] = connectTarget;
+                    connectFadeInStart[deviceNum] = tickNow;
+                    connectFadingIn[deviceNum] = true;
+                    batteryFadingIn[deviceNum] = false;
+                    fadeInReplayed[deviceNum] = false;
+                    forcedColor[deviceNum] = connectTarget;
+                    forcelight[deviceNum] = true;
+                    batteryFadingOut[deviceNum] = false;
+                    batteryFadeOutGraceUntil[deviceNum] = DateTime.MinValue;
+                    fading[deviceNum] = false;
+                    lastSentColor[deviceNum] = new DS4Color(0, 0, 0);
+                    lastSentValid[deviceNum] = true;
+                }
+
                 // Battery hold override, after all other color logic.
                 if (BatteryHoldUntil[deviceNum] != DateTime.MinValue)
                 {
                     if (DateTime.UtcNow < BatteryHoldUntil[deviceNum])
                     {
+                        // The publish grace below is measured from the first
+                        // tick of this hold, so record it once here. Mapping
+                        // creates battery holds itself, which is why entry is
+                        // detected here instead of at creation.
+                        if (batteryHoldEnteredAt[deviceNum] == DateTime.MinValue)
+                            batteryHoldEnteredAt[deviceNum] = tickNow;
+                        // New battery-check hold: fade in from the color
+                        // the controller is showing now (profile color)
+                        // to the battery color over 600 ms, then hold.
+                        // A connect hold (Snap false) keeps its own fade.
+                        if (BatteryHoldSnap[deviceNum] && !batteryFadingIn[deviceNum] && !batteryHoldWasActive[deviceNum])
+                        {
+                            batteryFadeInFrom[deviceNum] = lastSentValid[deviceNum] ? lastSentColor[deviceNum] : getMainColor(deviceNum);
+                            batteryFadeInTo[deviceNum] = BatteryHoldColor[deviceNum];
+                            batteryFadeInStart[deviceNum] = tickNow;
+                            batteryFadingIn[deviceNum] = true;
+                            batteryFadePublished[deviceNum] = false;
+                            ledDirectSendFailedLogged[deviceNum] = false;
+                            connectFadingIn[deviceNum] = false;
+                            fadeInReplayed[deviceNum] = false;
+                        }
+                        // Freeze the fade clock and extend the hold while
+                        // no physical publish has succeeded yet. Otherwise
+                        // the 3s hold expires in software while BT transport
+                        // is still transitioning, and the controller only
+                        // ever sees the final color, or nothing.
+                        // 2026-11-06: this freeze is now bounded. It used to
+                        // run on every tick for as long as the send stayed
+                        // unacknowledged, which pinned the fade and pushed
+                        // the hold out indefinitely. After
+                        // MaxHoldPublishGraceMs with no publish, stop
+                        // freezing and let the fade and the hold run on
+                        // wall-clock time so the sequence always finishes
+                        // and the profile colour always comes back.
+                        double holdPublishGraceMs =
+                            (tickNow - batteryHoldEnteredAt[deviceNum]).TotalMilliseconds;
+                        bool freezeForPublish = holdPublishGraceMs >= 0.0 &&
+                            holdPublishGraceMs < MaxHoldPublishGraceMs;
+                        if (BatteryHoldSnap[deviceNum] && !batteryFadePublished[deviceNum] && freezeForPublish)
+                        {
+                            batteryFadeInStart[deviceNum] = tickNow;
+                            BatteryHoldUntil[deviceNum] = tickNow.AddSeconds(3);
+                        }
+                        else if (!BatteryHoldSnap[deviceNum] && !connectFadePublished[deviceNum] && freezeForPublish)
+                        {
+                            connectFadeInStart[deviceNum] = tickNow;
+                            BatteryHoldUntil[deviceNum] = tickNow.AddSeconds(3);
+                        }
+                        batteryHoldWasActive[deviceNum] = true;
+                        batteryFadingOut[deviceNum] = false;
                         color = BatteryHoldColor[deviceNum];
                         useLightRoutine = true;
                         useForceLight = false;
@@ -355,7 +601,228 @@ namespace DS4Windows
                     else
                     {
                         BatteryHoldUntil[deviceNum] = DateTime.MinValue;
+                        BatteryHoldSnap[deviceNum] = false;
+                        batteryHoldEnteredAt[deviceNum] = DateTime.MinValue;
+                        batteryFadingIn[deviceNum] = false;
+                        connectFadingIn[deviceNum] = false;
                     }
+                }
+
+                // Battery fade-out only: start once, on the first tick
+                // after the hold ends, whether DS4LightBar or Mapping
+                // cleared it. Target is the actual profile/custom color,
+                // not the previous color, and a stale forced battery color
+                // is cleared here so it cannot reassert the battery color.
+                if (batteryHoldWasActive[deviceNum] &&
+                    (BatteryHoldUntil[deviceNum] == DateTime.MinValue ||
+                     DateTime.UtcNow >= BatteryHoldUntil[deviceNum]))
+                {
+                    batteryHoldWasActive[deviceNum] = false;
+                    BatteryHoldUntil[deviceNum] = DateTime.MinValue;
+                    batteryHoldEnteredAt[deviceNum] = DateTime.MinValue;
+                    DS4Color fadeOutTarget = lightModeInfo.useCustomLed
+                        ? lightModeInfo.m_CustomLed : getMainColor(deviceNum);
+                    DS4Color fadeOutFrom = BatteryHoldColor[deviceNum];
+                    // Spec: fade out FROM the battery color into profile.
+                    // lastSent may be an intermediate faded color if the
+                    // hold ended mid-fade, or the profile color if the fade
+                    // was frozen. Use the full battery color unless the
+                    // last sent color already is the battery color.
+                    if (lastSentValid[deviceNum] && lastSentColor[deviceNum].red == BatteryHoldColor[deviceNum].red && lastSentColor[deviceNum].green == BatteryHoldColor[deviceNum].green && lastSentColor[deviceNum].blue == BatteryHoldColor[deviceNum].blue)
+                        fadeOutFrom = lastSentColor[deviceNum];
+                    forcelight[deviceNum] = false;
+                    if (fadeOutFrom.red != fadeOutTarget.red ||
+                        fadeOutFrom.green != fadeOutTarget.green ||
+                        fadeOutFrom.blue != fadeOutTarget.blue)
+                    {
+                        batteryFadeOutFrom[deviceNum] = fadeOutFrom;
+                        batteryFadeOutTo[deviceNum] = fadeOutTarget;
+                        batteryFadeOutStart[deviceNum] = tickNow;
+                        batteryFadingOut[deviceNum] = true;
+                        fading[deviceNum] = false;
+                    }
+                }
+                if (batteryFadingOut[deviceNum] && !isFreshConnect)
+                {
+                    double fadeOutElapsedMs = (tickNow - batteryFadeOutStart[deviceNum]).TotalMilliseconds;
+                    double fadeOutRatio = fadeOutElapsedMs / 420.0;
+                    if (fadeOutRatio >= 1.0)
+                    {
+                        color = batteryFadeOutTo[deviceNum];
+                        batteryFadingOut[deviceNum] = false;
+                        fading[deviceNum] = false;
+                        batteryFadeOutGraceUntil[deviceNum] = tickNow.AddMilliseconds(750);
+                    }
+                    else
+                    {
+                        if (fadeOutRatio < 0.0) fadeOutRatio = 0.0;
+                        DS4Color fadeOutFromC = batteryFadeOutFrom[deviceNum];
+                        DS4Color fadeOutToC = batteryFadeOutTo[deviceNum];
+                        color = new DS4Color(
+                            (byte)(fadeOutFromC.red + (fadeOutToC.red - fadeOutFromC.red) * fadeOutRatio),
+                            (byte)(fadeOutFromC.green + (fadeOutToC.green - fadeOutFromC.green) * fadeOutRatio),
+                            (byte)(fadeOutFromC.blue + (fadeOutToC.blue - fadeOutFromC.blue) * fadeOutRatio));
+                    }
+                    useLightRoutine = true;
+                    useForceLight = false;
+                    forcedFlash[deviceNum] = 0;
+                    forcelight[deviceNum] = false;
+                    if (device is DS4Windows.InputDevices.DualSenseDevice dsDeviceFadeOut)
+                    {
+                        dsDeviceFadeOut.ForceBatteryLightbarOwnership();
+                    }
+                    // Tell the generic fade below this color is already the
+                    // interpolated fade-out color, so it does not start a
+                    // competing fade on the same tick.
+                    lastSentColor[deviceNum] = color;
+                    lastSentValid[deviceNum] = true;
+                }
+                else if (batteryFadingOut[deviceNum] && isFreshConnect)
+                {
+                    batteryFadingOut[deviceNum] = false;
+                }
+
+                // Fade-out grace: after the fade-out ends, keep
+                // queuing a physical output for 750 ms so the final
+                // profile color is direct-sent, not left to the stalled
+                // speaker clock. Normal profile logic already yields
+                // that same color, so this changes transport only.
+                if (!batteryFadingOut[deviceNum] &&
+                    batteryFadeOutGraceUntil[deviceNum] != DateTime.MinValue)
+                {
+                    if (tickNow < batteryFadeOutGraceUntil[deviceNum])
+                    {
+                        if (device is DS4Windows.InputDevices.DualSenseDevice dsDeviceGrace)
+                        {
+                            dsDeviceGrace.ForceBatteryLightbarOwnership();
+                        }
+                    }
+                    else
+                    {
+                        batteryFadeOutGraceUntil[deviceNum] = DateTime.MinValue;
+                    }
+                }
+
+                // Explicit fade-ins (2026-11-05): battery check fades
+                // profile -> battery color, connect fades black -> profile,
+                // both over 600 ms. These run first and set lastSent to the
+                // interpolated color, so the generic fade below does not
+                // start a competing fade on the same tick.
+                if (batteryFadingIn[deviceNum])
+                {
+                    double fadeInElapsedMs = (tickNow - batteryFadeInStart[deviceNum]).TotalMilliseconds;
+                    double fadeInRatio = fadeInElapsedMs / 600.0;
+                    if (fadeInRatio >= 1.0)
+                    {
+                        color = batteryFadeInTo[deviceNum];
+                        batteryFadingIn[deviceNum] = false;
+                    }
+                    else
+                    {
+                        if (fadeInRatio < 0.0) fadeInRatio = 0.0;
+                        DS4Color fiFrom = batteryFadeInFrom[deviceNum];
+                        DS4Color fiTo = batteryFadeInTo[deviceNum];
+                        color = new DS4Color(
+                            (byte)(fiFrom.red + (fiTo.red - fiFrom.red) * fadeInRatio),
+                            (byte)(fiFrom.green + (fiTo.green - fiFrom.green) * fadeInRatio),
+                            (byte)(fiFrom.blue + (fiTo.blue - fiFrom.blue) * fadeInRatio));
+                    }
+                    lastSentColor[deviceNum] = color;
+                    lastSentValid[deviceNum] = true;
+                    fading[deviceNum] = false;
+                }
+                else if (connectFadingIn[deviceNum])
+                {
+                    double fadeInElapsedMs = (tickNow - connectFadeInStart[deviceNum]).TotalMilliseconds;
+                    double fadeInRatio = fadeInElapsedMs / 600.0;
+                    if (fadeInRatio >= 1.0)
+                    {
+                        color = connectFadeInTo[deviceNum];
+                        connectFadingIn[deviceNum] = false;
+                    }
+                    else
+                    {
+                        if (fadeInRatio < 0.0) fadeInRatio = 0.0;
+                        DS4Color fiFrom = connectFadeInFrom[deviceNum];
+                        DS4Color fiTo = connectFadeInTo[deviceNum];
+                        color = new DS4Color(
+                            (byte)(fiFrom.red + (fiTo.red - fiFrom.red) * fadeInRatio),
+                            (byte)(fiFrom.green + (fiTo.green - fiFrom.green) * fadeInRatio),
+                            (byte)(fiFrom.blue + (fiTo.blue - fiFrom.blue) * fadeInRatio));
+                    }
+                    lastSentColor[deviceNum] = color;
+                    lastSentValid[deviceNum] = true;
+                    fading[deviceNum] = false;
+                }
+
+                // Fade in/out: smooth any color change over 600 ms.
+                // Skip for rainbow, pulse flash, charging pulse/rainbow,
+                // distance rumble, and forced picker preview, which already
+                // animate or need live response, and skip on shutdown.
+                // BatteryHoldSnap no longer skips the fade: a battery check
+                // now fades in via the explicit state above, it must not
+                // snap. That was the Nov 5 regression.
+                bool skipFade = shuttingdown || useForceLight ||
+                    lightModeInfo.rainbow > 0 ||
+                    (lightModeInfo.flashType == 1 && device.getBattery() <= lightModeInfo.flashAt && !device.isCharging()) ||
+                    (device.isCharging() && (lightModeInfo.chargingType == 1 || lightModeInfo.chargingType == 2)) ||
+                    (DistanceProfiles[deviceNum] || tempprofileDistance[deviceNum]);
+                if (!skipFade)
+                {
+                    // Generic color-change fade, the same code a battery
+                    // check uses. On a fresh connect the last sent color
+                    // was reset to black above, so this interpolates
+                    // black to the profile/custom color. No special
+                    // connect fade branch exists anymore.
+                    // 2026-11-05: if lastSent was never set, treat it as
+                    // black instead of skipping the fade and snapping.
+                    if (!lastSentValid[deviceNum])
+                    {
+                        lastSentColor[deviceNum] = new DS4Color(0, 0, 0);
+                        lastSentValid[deviceNum] = true;
+                    }
+                    if ((color.red != lastSentColor[deviceNum].red || color.green != lastSentColor[deviceNum].green || color.blue != lastSentColor[deviceNum].blue))
+                    {
+                        if (!fading[deviceNum] || fadeToColor[deviceNum].red != color.red || fadeToColor[deviceNum].green != color.green || fadeToColor[deviceNum].blue != color.blue)
+                        {
+                            fadeFromColor[deviceNum] = lastSentColor[deviceNum];
+                            fadeToColor[deviceNum] = color;
+                            fadeStart[deviceNum] = tickNow;
+                            fading[deviceNum] = true;
+                        }
+                    }
+                    if (fading[deviceNum])
+                    {
+                        double elapsedMs = (tickNow - fadeStart[deviceNum]).TotalMilliseconds;
+                        // Fade in 600 ms, fade out 420 ms (0.7x), by direction.
+                        int fadeFromSum = fadeFromColor[deviceNum].red + fadeFromColor[deviceNum].green + fadeFromColor[deviceNum].blue;
+                        int fadeToSum = fadeToColor[deviceNum].red + fadeToColor[deviceNum].green + fadeToColor[deviceNum].blue;
+                        double fadeDurationMs = fadeToSum >= fadeFromSum ? FadeDurationMs : 420.0;
+                        double ratio = elapsedMs / fadeDurationMs;
+                        if (ratio >= 1.0)
+                        {
+                            color = fadeToColor[deviceNum];
+                            fading[deviceNum] = false;
+                        }
+                        else
+                        {
+                            if (ratio < 0.0) ratio = 0.0;
+                            DS4Color fromC = fadeFromColor[deviceNum];
+                            DS4Color toC = fadeToColor[deviceNum];
+                            color = new DS4Color(
+                                (byte)(fromC.red + (toC.red - fromC.red) * ratio),
+                                (byte)(fromC.green + (toC.green - fromC.green) * ratio),
+                                (byte)(fromC.blue + (toC.blue - fromC.blue) * ratio));
+                        }
+                    }
+                    lastSentColor[deviceNum] = color;
+                    lastSentValid[deviceNum] = true;
+                }
+                else
+                {
+                    lastSentColor[deviceNum] = color;
+                    lastSentValid[deviceNum] = true;
+                    fading[deviceNum] = false;
                 }
 
                 DS4LightbarState lightState = new DS4LightbarState

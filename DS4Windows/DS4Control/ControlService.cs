@@ -1,4 +1,4 @@
-/*
+﻿/*
 DS4Windows
 Copyright (C) 2023  Travis Nickles
 
@@ -2397,7 +2397,29 @@ namespace DS4Windows
         {
             contType = contType.Normalize();
             StartupDiag($"EstablishOutDevice begin index={index} contType={contType}");
-            OutputDevice temp = outputslotMan.AllocateController(contType);
+            OutputDevice temp;
+            // 2026-11-02 one main audio device: if the physical
+            // controller for this input slot is a DualSense/Edge, the
+            // primary gamepad must not create its own audio device.
+            // Allocate it gamepad-only, so its speaker and microphone
+            // stay on the one persistent DualSense audio sidecar for
+            // this slot, created by EnsurePlayStationFeatureOutput.
+            // This applies to Sony primaries only; Xbox/Switch
+            // primaries have no Sony audio interfaces of their own.
+            // Unbound outputs (index -1) keep the normal allocation.
+            if (index >= 0 && index < DS4Controllers.Length &&
+                DS4Controllers[index] is InputDevices.DualSenseDevice &&
+                (contType == OutContType.ViiperDS4 ||
+                 contType == OutContType.ViiperDualSense ||
+                 contType == OutContType.ViiperDualSenseEdge))
+            {
+                temp = outputslotMan.AllocateGamepadOnlyController(contType);
+                LogDebug($"Main audio: gamepad-only primary {contType.ToDisplayName()} for controller #{index + 1}, audio stays on the persistent DualSense sidecar", false);
+            }
+            else
+            {
+                temp = outputslotMan.AllocateController(contType);
+            }
             StartupDiag($"EstablishOutDevice end index={index} contType={contType} result={temp?.GetType().Name ?? "null"}");
             return temp;
         }
@@ -2536,6 +2558,7 @@ namespace DS4Windows
                     outputslotMan.IsExactBoundOutput(produced, index))
                 {
                     LogDebug($"Associated input controller #{index + 1} ({device.DisplayName}) to virtual {slotDevice.CurrentType.ToDisplayName()} Controller in{(slotDevice.PermanentType != OutContType.None ? " permanent" : "")} output slot #{slotDevice.Index + 1}");
+                    RumbleLogger.LogReconnect($"#{index + 1} {device.DisplayName} [{device.MacAddress}]", "virtual-controller-associated");
                     useDInputOnly[index] = false;
                     StartupDiag($"PluginOutDev success index={index} slot={slotDevice.Index + 1} output={slotDevice.OutputDevice.GetDeviceType()}");
                     Interlocked.CompareExchange(ref virtualOutputAttempts[index], null, outputAttempt);
@@ -2599,7 +2622,43 @@ namespace DS4Windows
                         string tempType = slotDevice.CurrentType.ToDisplayName();
                         LogDebug($"Disassociated virtual {tempType} Controller in{(slotDevice.CurrentReserveStatus == OutSlotDevice.ReserveStatus.Permanent ? " permanent" : "")} output slot #{slotDevice.Index + 1} from input controller #{index + 1} ({device.DisplayName})", false);
 
-                        if ((slotDevice.CurrentAttachedStatus == OutSlotDevice.AttachedStatus.Attached &&
+                        if (force)
+                        {
+                            // Forced removal (DS4 stop, forced replacement):
+                            // destroy the virtual device exactly as before.
+                            outputslotMan.DeferredRemoval(dev, index, outputDevices, immediate);
+                            if (outputslotMan.GetOutSlotDevice(dev) != null)
+                                throw new InvalidOperationException("The virtual output remains registered after removal.");
+                            outputCleanupCompleted = true;
+                        }
+                        else if (dev is ViiperOutDevice)
+                        {
+                            // 2026-11-02 same device ID keep-alive: on a
+                            // physical disconnect while DS4 keeps running,
+                            // do NOT destroy the virtual device. Release
+                            // only the input binding (TryReleaseBoundOutput
+                            // sends neutral state via ResetState), so the
+                            // VIIPER device, its Windows instance ID, and
+                            // its audio endpoint GUIDs stay alive. On
+                            // reconnect PluginOutDev rebinds this exact
+                            // attached, unbound output instead of creating
+                            // a new bus/device. Fall back to the old
+                            // destroy path only if the release fails.
+                            if (slotDevice.CurrentAttachedStatus == OutSlotDevice.AttachedStatus.Attached &&
+                                outputslotMan.TryReleaseBoundOutput(dev, outputDevices, index))
+                            {
+                                LogDebug($"Keep-alive: virtual {tempType} Controller in output slot #{slotDevice.Index + 1} retained, not destroyed, so it keeps the same Windows device ID on reconnect", false);
+                                outputCleanupCompleted = true;
+                            }
+                            else
+                            {
+                                outputslotMan.DeferredRemoval(dev, index, outputDevices, immediate);
+                                if (outputslotMan.GetOutSlotDevice(dev) != null)
+                                    throw new InvalidOperationException("The virtual output remains registered after removal.");
+                                outputCleanupCompleted = true;
+                            }
+                        }
+                        else if ((slotDevice.CurrentAttachedStatus == OutSlotDevice.AttachedStatus.Attached &&
                             slotDevice.CurrentReserveStatus == OutSlotDevice.ReserveStatus.Dynamic) || force)
                         {
                             outputslotMan.DeferredRemoval(dev, index, outputDevices, immediate);
@@ -2954,6 +3013,8 @@ namespace DS4Windows
                     // discovery or DS4Windows will ingest its own VIIPER DS4,
                     // create a second output/UAC endpoint, and recurse.
                     ViiperUsbipPortManager.RecoverStaleLocalViiperPortsAtStartup();
+                    // 2026-11-02 numbered audio fixer, DS4 startup scan.
+                    NumberedAudioEndpointFixer.RunPreCreationScan();
                     // Let usbccgp/HID finish publishing removal before the
                     // first input snapshot; otherwise a detached interface can
                     // remain enumerable for one final discovery pass.
@@ -4031,6 +4092,22 @@ namespace DS4Windows
             }
 
             ViiperOutDevice primary = outputDevices[index] as ViiperOutDevice;
+            // 2026-11-03, one-main-audio fix: a gamepad-only primary has
+            // no audio, no atomic haptics, and no microphone. Returning
+            // it here hid the audio-only sidecar from every caller,
+            // including the status lane check, which then reported
+            // Needs attention forever. When the primary is gamepad-only,
+            // the persistent audio-only sidecar is the PlayStation
+            // audio output, not the primary.
+            if (primary != null && primary.IsGamepadOnly)
+            {
+                lock (playStationFeatureOutputLock)
+                {
+                    ViiperOutDevice sidecar = playStationFeatureOutputDevices[index];
+                    if (sidecar != null)
+                        return sidecar;
+                }
+            }
             if (primary != null &&
                 PlayStationFeatureOutputPolicy.IsPlayStationAudioOutput(
                     primary.OutputType))
@@ -4050,6 +4127,36 @@ namespace DS4Windows
                 OutContType.None;
         }
 
+        // 2026-11-02 one main audio device: one speaker and one
+        // microphone, both DualSense Wireless Controller, shared
+        // across every profile and every emulated controller for
+        // this input slot. Switching profiles only switches the
+        // gamepad output type, never the audio device, and creates
+        // nothing new, once the main audio device exists.
+        //
+        // Rules, in order:
+        // 1. If a main audio sidecar already exists and is runtime
+        //    connected, return it and NEVER disconnect it, whatever
+        //    the primary gamepad type is now. This is what makes a
+        //    DualSense -> DualShock -> Xbox switch keep DualSense
+        //    audio instead of switching to Wireless Controller audio.
+        // 2. If there is no sidecar, and the primary itself is a
+        //    full (not gamepad-only) PlayStation audio output that
+        //    is runtime connected, use the primary as the main
+        //    audio device and create nothing new. This preserves
+        //    the audio device that already exists on first connect
+        //    after this build is deployed.
+        // 3. Otherwise, create one DualSense audio-only sidecar for
+        //    a DualSense physical controller, regardless of the
+        //    primary gamepad type and regardless of BT or USB, and
+        //    keep it. For non-DualSense physical controllers, fall
+        //    back to the previous sidecar-type logic, so a DS4
+        //    physical controller does not get a DualSense audio
+        //    transport it cannot speak.
+        // The sidecar is destroyed only by
+        // StopAllPlayStationFeatureOutputs, i.e. on DS4 stop, never
+        // on physical disconnect (RetainPlayStationFeatureOutput
+        // ForKeepAlive) and never on profile switch.
         private ViiperOutDevice EnsurePlayStationFeatureOutput(
             int index, DS4Device source)
         {
@@ -4057,21 +4164,57 @@ namespace DS4Windows
             OutContType primaryType = primary?.OutputType ??
                 Global.OutContType[index].Normalize();
 
+            lock (playStationFeatureOutputLock)
+            {
+                ViiperOutDevice existing =
+                    playStationFeatureOutputDevices[index];
+                if (existing?.IsRuntimeConnected == true &&
+                    existing.CanReuseForPhysicalController(index))
+                {
+                    existing.BindPhysicalController(index);
+                    LogDebug($"Main audio: retained DualSense audio sidecar for controller #{index + 1} across profile switch, audio stays on DualSense Wireless Controller", false);
+                    return existing;
+                }
+                if (existing != null && !existing.IsRuntimeConnected)
+                {
+                    playStationFeatureOutputDevices[index] = null;
+                    try { existing.Disconnect(); } catch { }
+                    existing = null;
+                }
+            }
+
             if (primary?.IsRuntimeConnected == true &&
+                !primary.IsGamepadOnly &&
                 PlayStationFeatureOutputPolicy.IsPlayStationAudioOutput(
                     primaryType))
             {
-                DisconnectPlayStationFeatureOutput(index);
+                LogDebug($"Main audio: using primary {primaryType.ToDisplayName()} composite as the main audio device for controller #{index + 1}, creating no new audio device", false);
                 return primary;
             }
 
-            OutContType desiredSidecar = primary?.IsRuntimeConnected == true
-                ? PlayStationFeatureOutputPolicy.GetAudioOnlySidecarType(
-                    source, primaryType, getDInputOnly(index))
-                : OutContType.None;
+            OutContType desiredSidecar = OutContType.None;
+            if (primary?.IsRuntimeConnected == true)
+            {
+                if (source is InputDevices.DualSenseDevice)
+                {
+                    // One main audio device, always DualSense, even
+                    // when the emulated gamepad is DualShock, Xbox
+                    // or Switch, and even when USB is connected.
+                    // The physical USB DualSense audio will still
+                    // enumerate in Windows, DS4 cannot stop that,
+                    // but DS4's own passthrough, haptics and mic
+                    // routing use this virtual sidecar, not the
+                    // physical endpoint. See the report limitation.
+                    desiredSidecar = OutContType.ViiperDualSense;
+                }
+                else
+                {
+                    desiredSidecar = PlayStationFeatureOutputPolicy.GetAudioOnlySidecarType(
+                        source, primaryType, getDInputOnly(index));
+                }
+            }
             if (desiredSidecar == OutContType.None)
             {
-                DisconnectPlayStationFeatureOutput(index);
                 return null;
             }
 
@@ -4080,17 +4223,15 @@ namespace DS4Windows
                 ViiperOutDevice existing =
                     playStationFeatureOutputDevices[index];
                 if (existing?.IsRuntimeConnected == true &&
-                    existing.OutputType == desiredSidecar &&
                     existing.CanReuseForPhysicalController(index))
                 {
                     existing.BindPhysicalController(index);
                     return existing;
                 }
-
                 if (existing != null)
                 {
                     playStationFeatureOutputDevices[index] = null;
-                    existing.Disconnect();
+                    try { existing.Disconnect(); } catch { }
                 }
 
                 ViiperOutDevice sidecar = new ViiperOutDevice(
@@ -4105,6 +4246,7 @@ namespace DS4Windows
                     sidecar.BindPhysicalController(index);
                     sidecar.Connect();
                     playStationFeatureOutputDevices[index] = sidecar;
+                    LogDebug($"Main audio: created one DualSense audio-only sidecar for controller #{index + 1}, retained across disconnects and profile switches and on DS4 stop, removed only by the Settings remove button", false);
                     StartupDiag(
                         $"Persistent PlayStation audio owner ready index={index} type={desiredSidecar} port={sidecar.DirectSpeakerUsbipPort}");
                     return sidecar;
@@ -4143,12 +4285,42 @@ namespace DS4Windows
             }
         }
 
+        private void RetainPlayStationFeatureOutputForKeepAlive(int index)
+        {
+            ViiperOutDevice sidecar = null;
+            lock (playStationFeatureOutputLock)
+            {
+                if (index >= 0 && index < playStationFeatureOutputDevices.Length)
+                    sidecar = playStationFeatureOutputDevices[index];
+            }
+            if (sidecar == null)
+                return;
+            if (sidecar.IsRuntimeConnected)
+            {
+                try { sidecar.ResetState(); } catch { }
+                LogDebug($"Keep-alive: PlayStation audio sidecar {sidecar.OutputType} for controller #{index + 1} retained, not destroyed, so it keeps the same Windows device ID on reconnect", false);
+            }
+            else
+            {
+                DisconnectPlayStationFeatureOutput(index);
+            }
+        }
+
+        // 2026-11-03 DS4 stop audio persistence: do NOT destroy the
+        // main audio sidecar on DS4 stop. Retain it like keep-alive:
+        // ResetState to neutral, keep the VIIPER stream attached, so
+        // the device stays present in Windows while DS4 is stopped.
+        // Audio routing is reset by the passthrough resets in Stop,
+        // so it is silent until DS4 returns, but Windows/Sonar do
+        // not lose the device. Gamepad primaries are still removed
+        // separately in Stop, only the audio sidecar stays.
         private void StopAllPlayStationFeatureOutputs()
         {
             for (int index = 0; index <
                 playStationFeatureOutputDevices.Length; index++)
             {
-                DisconnectPlayStationFeatureOutput(index);
+                RetainPlayStationFeatureOutputForKeepAlive(index);
+                LogDebug($"Main audio: retained DualSense audio sidecar for controller #{index + 1} on DS4 stop, not destroyed, audio silent until DS4 returns", false);
             }
         }
 
@@ -5132,7 +5304,12 @@ namespace DS4Windows
             dualShock4AudioPassthrough.Stop(index);
             dualSenseMicrophonePassthrough.Stop();
             audioHapticsService.Stop(index);
-            DisconnectPlayStationFeatureOutput(index);
+            // 2026-11-02 same device ID keep-alive: on physical removal,
+            // retain a live PlayStation audio sidecar instead of
+            // destroying it, so a reconnect reuses it (Ensure already
+            // reuses a runtime-connected sidecar of the same type).
+            // DS4 stop still destroys it via StopAllPlayStationFeatureOutputs.
+            RetainPlayStationFeatureOutputForKeepAlive(index);
         }
 
         private static void CommitNeutralMapping(int index)
@@ -5255,9 +5432,12 @@ namespace DS4Windows
                     ? ControllerRuntimeLaneState.NotRequired
                     : advancedHapticsOutput?.SupportsAtomicAudioHaptics == true
                         ? ControllerRuntimeLaneState.Ready
-                        : virtualConnected
-                            ? ControllerRuntimeLaneState.Unavailable
-                            : ControllerRuntimeLaneState.Starting;
+                        : advancedHapticsOutput != null &&
+                            !advancedHapticsOutput.IsRuntimeConnected
+                            ? ControllerRuntimeLaneState.Starting
+                            : virtualConnected
+                                ? ControllerRuntimeLaneState.Unavailable
+                                : ControllerRuntimeLaneState.Starting;
 
             // A shared profile can retain Sony media settings while running
             // on Switch 2 or another controller. Require a lane only when the
@@ -5961,6 +6141,10 @@ namespace DS4Windows
                 dualSenseDevice);
             Volatile.Write(ref dualSenseMuteOutputSignatures[ind],
                 publicationSignature);
+            if (muteLatched && !policy.OverridesMuteLed)
+            {
+                LogDebug("DualSense mute pressed, microphone muted, but the mute button light is off in this profile, so the button will not go orange. To see orange, turn on Enable mute button light in Profile Editor, DualSense mute button, with Mute Button Mutes Input/Output on.", false);
+            }
             return true;
         }
 
@@ -6008,8 +6192,10 @@ namespace DS4Windows
             }
 
             bool muteDown = cState.Mute;
+            bool muteToggled = false;
             if (muteDown && !dualSenseMuteButtonWasDown[ind])
             {
+                muteToggled = true;
                 dualSenseMuteLedOn[ind] = !dualSenseMuteLedOn[ind];
 
                 if (policy.SwitchesProfiles)
@@ -6036,6 +6222,14 @@ namespace DS4Windows
                 ApplyDualSenseMuteButtonOutputState(ind, dualSenseDevice,
                     policy, IsControllerSpeakerEnabled(ind),
                     IsControllerHeadsetOnlyAudio(ind));
+            if (muteToggled)
+            {
+                // 2026-11-05 LED fix: send the orange mute LED via a direct
+                // BT control report now, like a lightbar hold, not only via
+                // the speaker-clocked cache, which can stall / be owned by Steam.
+                dualSenseDevice.RequestMuteLedDirectSend();
+                AppLogger.LogToGui($"LED mute click: controller {ind + 1} muted={dualSenseMuteLedOn[ind]} lightEnabled={policy.OverridesMuteLed} direct BT send requested", false);
+            }
             if (policy.InputOutputModeEnabled)
             {
                 // Cancel a profile action queued by the previous settings or
@@ -6816,6 +7010,15 @@ namespace DS4Windows
 
         protected void CheckForTouchToggle(int deviceID, DS4State cState, DS4State pState)
         {
+            // DualTouch port: while the on-screen keyboard is open,
+            // the user must not be able to turn mouse movement back
+            // on. Skip the toggle entirely (silently, no toast), so
+            // the pre-keyboard state is restored on close. Mouse.cs
+            // suppression is the other half: even if movement were
+            // on, it stays off while open. The saved touchpad-typing
+            // setting value itself is not changed here.
+            if (DS4Windows.OnScreenKeyboardState.IsActive(deviceID))
+                return;
             if (!IsUsingTouchpadForControls(deviceID) && cState.Touch1 && pState.PS)
             {
                 if (GetTouchActive(deviceID) && touchreleased[deviceID])

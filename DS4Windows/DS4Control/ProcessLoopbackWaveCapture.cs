@@ -496,6 +496,7 @@ namespace DS4Windows
             SourceChanged?.Invoke(this,
                 new ProcessAudioSourceChangedEventArgs(processId,
                     CurrentSourceDisplayName, evidence));
+            try { RumbleLogger.LogAudioSource(selector, CurrentSourceDisplayName, processId); } catch { }
         }
 
         private void ClearCurrentSession()
@@ -513,6 +514,7 @@ namespace DS4Windows
             SourceChanged?.Invoke(this,
                 new ProcessAudioSourceChangedEventArgs(0,
                     "Waiting for a detected game", "waiting"));
+            try { RumbleLogger.SetAudioSource("Waiting for a detected game"); } catch { }
         }
 
         private string ResolveProcessedRouteEndpointId(int processId)

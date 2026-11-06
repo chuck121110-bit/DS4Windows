@@ -2777,6 +2777,31 @@ Suspend support not enabled.", true);
             RefreshViiperStatusText();
         }
 
+        private void RemoveMainAudioBtn_Click(object sender, RoutedEventArgs e)
+        {
+            MessageBoxResult confirm = MessageBox.Show(
+                "Remove the main DualSense speaker and microphone? They are never removed automatically, and this button is the only removal path. They will return on the next controller connect.",
+                "Remove main DualSense audio device",
+                MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (confirm != MessageBoxResult.Yes)
+                return;
+            try
+            {
+                DualSenseAudioEndpointCleanup.RemoveMainAudioDevicesExplicit();
+                MessageBox.Show(
+                    "Main DualSense audio devices removed. They will return on the next controller connect.",
+                    "Remove main DualSense audio device",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"Could not remove the main DualSense audio devices: {ex.Message}",
+                    "Remove main DualSense audio device",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
         private void RefreshViiperStatusText()
         {
             if (viiperStatusText == null)

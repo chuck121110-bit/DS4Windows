@@ -1,4 +1,4 @@
-﻿/*
+/*
 DS4Windows
 Copyright (C) 2023  Travis Nickles
 
@@ -27,6 +27,7 @@ namespace DS4Windows.DS4Control
             MOUSEEVENTF_MIDDLEDOWN = 32; MOUSEEVENTF_MIDDLEUP = 64;
             MOUSEEVENTF_XBUTTONDOWN = 128; MOUSEEVENTF_XBUTTONUP = 256;
             MOUSEEVENTF_WHEEL = 0x0800; MOUSEEVENTF_HWHEEL = 0x1000;
+            KEY_LEFT = 0x25; KEY_RIGHT = 0x27; // SendInput uses VK codes
         }
 
         /// <summary>
