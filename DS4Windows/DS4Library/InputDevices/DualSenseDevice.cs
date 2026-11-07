@@ -7034,10 +7034,14 @@ namespace DS4Windows.InputDevices
                         }
                         if (published)
                         {
-                            // First successful physical publish: start
-                            // the fade clocks now, not at the first software
-                            // tick (which may have been while BT transport
-                            // was still transitioning and published=False).
+                            // First successful physical publish during the
+                            // hold. The fade clock itself runs on wall-clock
+                            // time in DS4LightBar and is never parked; these
+                            // flags only stop the blocking direct send (the
+                            // ordinary cached path is enough once the colour
+                            // is known to land) and guard RestartMissedFadeIn
+                            // so a replay only happens when nothing has
+                            // physically landed yet.
                             DS4LightBar.MarkBatteryFadePublished(DeviceSlotNumber);
                             DS4LightBar.MarkConnectFadePublished(DeviceSlotNumber);
                         }
@@ -7050,10 +7054,14 @@ namespace DS4Windows.InputDevices
                         {
                             batteryHoldDirectLogged = true;
                             AppLogger.LogToGui($"LED battery hold direct send: color={activePhysicalOutputState.ProfileLightbar.LightBarColor.red},{activePhysicalOutputState.ProfileLightbar.LightBarColor.green},{activePhysicalOutputState.ProfileLightbar.LightBarColor.blue} published={published}", false);
-                            // 2026-11-05 fade-in fix: if the 600 ms software
+                            // 2026-11-05 fade-in fix: if the 300 ms software
                             // fade already expired before this first physical
-                            // send, the controller never saw it (snap).
-                            // Restart it once, so it is actually visible.
+                            // send and nothing has landed yet, the controller
+                            // would never see it (snap). Restart it once, so
+                            // it is actually visible. RestartMissedFadeIn
+                            // refuses to replay once any hold publish has
+                            // landed, so this cannot blink a colour the
+                            // controller is already showing.
                             try { DS4LightBar.RestartMissedFadeIn(DeviceSlotNumber); } catch { }
                         }
                     }
@@ -7602,11 +7610,11 @@ namespace DS4Windows.InputDevices
 
         // 2026-11-03 connect snap fix: if a connect-hold physical
         // send is deferred (BT audio pacer helper restarting at
-        // connect, lifecycle transitioning), the 600 ms software
+        // connect, lifecycle transitioning), the 300 ms software
         // fade expires before transport is ready, so the first
         // successful send only carries the final color, a snap.
-        // Remember the deferral, and on the first later successful
-        // send request a fresh connect fade in DS4LightBar.
+        // On the first direct send of the hold, ask DS4LightBar to
+        // replay the fade once if nothing has physically landed yet.
         // Capped per device instance so a flapping transport
         // cannot replay fades forever. Battery holds never set
         // this flag, and profile switches never create a new
@@ -7665,7 +7673,7 @@ namespace DS4Windows.InputDevices
                 }
 
                 // DS4LightBar already resolved battery-over-connect
-                // priority and applied the 600/420 ms fade into the
+                // priority and applied the 300/150 ms fade into the
                 // mailbox, so merge that faded color, never a raw hold
                 // color, which would snap instead of fading.
                 MergeProfileLightbarIntoV5AudioSnapshot(
