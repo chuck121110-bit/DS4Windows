@@ -147,9 +147,14 @@ namespace DS4Windows
         public static bool IsLedDirectSendFailedLogged(int deviceNum) => deviceNum >= 0 && deviceNum < Global.MAX_DS4_CONTROLLER_COUNT && ledDirectSendFailedLogged[deviceNum];
         public static void SetLedDirectSendFailedLogged(int deviceNum, bool value) { if (deviceNum >= 0 && deviceNum < Global.MAX_DS4_CONTROLLER_COUNT) ledDirectSendFailedLogged[deviceNum] = value; }
         // Called from DualSenseDevice on the first direct BT send during
-        // a hold. If the software fade already expired before that first
-        // physical send, the controller never saw it (snap). Restart it
-        // once per hold, from the same from-color, so it is visible.
+        // a hold. This used to replay a fade that expired before that
+        // first physical send, so a late transport still showed a fade
+        // instead of a snap. The replay was itself the flicker: the send
+        // that triggers it already carries the final colour, so starting
+        // over from black made the profile colour flash, then go dark,
+        // then fade in a second time. The fade clock is now parked until
+        // the first publish, so nothing expires unseen and this only
+        // guards a path that publishes before the clock is parked.
         public static void RestartMissedFadeIn(int deviceNum)
         {
             if (deviceNum < 0 || deviceNum >= Global.MAX_DS4_CONTROLLER_COUNT) return;
@@ -157,7 +162,15 @@ namespace DS4Windows
             DateTime now = DateTime.UtcNow;
             bool holdActive = BatteryHoldUntil[deviceNum] != DateTime.MinValue && now < BatteryHoldUntil[deviceNum];
             if (!holdActive) return;
-            if (BatteryHoldSnap[deviceNum] && !batteryFadingIn[deviceNum] &&
+            // Never replay a fade whose colour has already physically
+            // landed. A replay restarts from black, so the controller
+            // shows the final colour, then goes dark, then fades in
+            // again, which is the flicker Chuck reported. With the fade
+            // clock parked until the first publish a replay no longer
+            // has a reason to fire; this stays as the guard for any
+            // path that publishes before the clock is parked.
+            if (BatteryHoldSnap[deviceNum] && !batteryFadePublished[deviceNum] &&
+                !batteryFadingIn[deviceNum] &&
                 batteryFadeInStart[deviceNum] != DateTime.MinValue &&
                 (now - batteryFadeInStart[deviceNum]).TotalMilliseconds >= 600.0)
             {
@@ -166,6 +179,7 @@ namespace DS4Windows
                 fadeInReplayed[deviceNum] = true;
             }
             else if (!BatteryHoldSnap[deviceNum] &&
+                !connectFadePublished[deviceNum] &&
                 connectFadeInStart[deviceNum] != DateTime.MinValue &&
                 (now - connectFadeInStart[deviceNum]).TotalMilliseconds >= 600.0)
             {
@@ -207,6 +221,19 @@ namespace DS4Windows
         internal const double PULSE_FLASH_SEGMENTS = PULSE_FLASH_DURATION / 40;
         internal const int PULSE_CHARGING_DURATION = 4000;
         internal const double PULSE_CHARGING_SEGMENTS = (PULSE_CHARGING_DURATION / 40) - 2;
+
+        // 2026-11-06 smoother fades. Every fade used a straight linear
+        // ramp, which starts and stops at full speed and reads as a
+        // small jump at each end. Smoothstep keeps the same 600/420 ms
+        // durations but eases both ends, so a fade rolls out of the
+        // starting colour and settles into the target instead of
+        // snapping into motion and stopping dead.
+        private static double EaseFade(double t)
+        {
+            if (t <= 0.0) return 0.0;
+            if (t >= 1.0) return 1.0;
+            return t * t * (3.0 - 2.0 * t);
+        }
 
         public static void updateLightBar(DS4Device device, int deviceNum)
         {
@@ -562,26 +589,43 @@ namespace DS4Windows
                         // the 3s hold expires in software while BT transport
                         // is still transitioning, and the controller only
                         // ever sees the final color, or nothing.
-                        // 2026-11-06: this freeze is now bounded. It used to
-                        // run on every tick for as long as the send stayed
-                        // unacknowledged, which pinned the fade and pushed
-                        // the hold out indefinitely. After
-                        // MaxHoldPublishGraceMs with no publish, stop
-                        // freezing and let the fade and the hold run on
-                        // wall-clock time so the sequence always finishes
-                        // and the profile colour always comes back.
+                        // 2026-11-06: the hold extension below is bounded.
+                        // It used to run on every tick for as long as the
+                        // send stayed unacknowledged, which pushed the
+                        // hold out indefinitely, so the profile colour
+                        // never came back. After MaxHoldPublishGraceMs
+                        // with no publish the hold stops being extended
+                        // and runs out on wall-clock time. The fade clock
+                        // is a separate question and stays parked, see
+                        // below.
                         double holdPublishGraceMs =
                             (tickNow - batteryHoldEnteredAt[deviceNum]).TotalMilliseconds;
                         bool freezeForPublish = holdPublishGraceMs >= 0.0 &&
                             holdPublishGraceMs < MaxHoldPublishGraceMs;
-                        if (BatteryHoldSnap[deviceNum] && !batteryFadePublished[deviceNum] && freezeForPublish)
+                        // The fade clock is parked with no time limit
+                        // while nothing has physically landed yet. If it
+                        // were allowed to expire first, the first
+                        // successful send would carry the final colour
+                        // and RestartMissedFadeIn would then replay the
+                        // fade from black: that is the blink Chuck
+                        // reported, the profile colour flashes, then the
+                        // light goes dark and fades in a second time.
+                        // Parked, the first send carries the fade's
+                        // starting colour and the fade plays exactly
+                        // once. Only the hold itself stays bounded by
+                        // the grace above, so a transport that never
+                        // acknowledges still lets the hold end and the
+                        // profile colour come back.
+                        if (BatteryHoldSnap[deviceNum] && !batteryFadePublished[deviceNum])
                         {
                             batteryFadeInStart[deviceNum] = tickNow;
-                            BatteryHoldUntil[deviceNum] = tickNow.AddSeconds(3);
                         }
-                        else if (!BatteryHoldSnap[deviceNum] && !connectFadePublished[deviceNum] && freezeForPublish)
+                        else if (!BatteryHoldSnap[deviceNum] && !connectFadePublished[deviceNum])
                         {
                             connectFadeInStart[deviceNum] = tickNow;
+                        }
+                        if (freezeForPublish)
+                        {
                             BatteryHoldUntil[deviceNum] = tickNow.AddSeconds(3);
                         }
                         batteryHoldWasActive[deviceNum] = true;
@@ -656,12 +700,13 @@ namespace DS4Windows
                     else
                     {
                         if (fadeOutRatio < 0.0) fadeOutRatio = 0.0;
+                        double fadeOutEase = EaseFade(fadeOutRatio);
                         DS4Color fadeOutFromC = batteryFadeOutFrom[deviceNum];
                         DS4Color fadeOutToC = batteryFadeOutTo[deviceNum];
                         color = new DS4Color(
-                            (byte)(fadeOutFromC.red + (fadeOutToC.red - fadeOutFromC.red) * fadeOutRatio),
-                            (byte)(fadeOutFromC.green + (fadeOutToC.green - fadeOutFromC.green) * fadeOutRatio),
-                            (byte)(fadeOutFromC.blue + (fadeOutToC.blue - fadeOutFromC.blue) * fadeOutRatio));
+                            (byte)(fadeOutFromC.red + (fadeOutToC.red - fadeOutFromC.red) * fadeOutEase),
+                            (byte)(fadeOutFromC.green + (fadeOutToC.green - fadeOutFromC.green) * fadeOutEase),
+                            (byte)(fadeOutFromC.blue + (fadeOutToC.blue - fadeOutFromC.blue) * fadeOutEase));
                     }
                     useLightRoutine = true;
                     useForceLight = false;
@@ -720,12 +765,13 @@ namespace DS4Windows
                     else
                     {
                         if (fadeInRatio < 0.0) fadeInRatio = 0.0;
+                        double fadeInEase = EaseFade(fadeInRatio);
                         DS4Color fiFrom = batteryFadeInFrom[deviceNum];
                         DS4Color fiTo = batteryFadeInTo[deviceNum];
                         color = new DS4Color(
-                            (byte)(fiFrom.red + (fiTo.red - fiFrom.red) * fadeInRatio),
-                            (byte)(fiFrom.green + (fiTo.green - fiFrom.green) * fadeInRatio),
-                            (byte)(fiFrom.blue + (fiTo.blue - fiFrom.blue) * fadeInRatio));
+                            (byte)(fiFrom.red + (fiTo.red - fiFrom.red) * fadeInEase),
+                            (byte)(fiFrom.green + (fiTo.green - fiFrom.green) * fadeInEase),
+                            (byte)(fiFrom.blue + (fiTo.blue - fiFrom.blue) * fadeInEase));
                     }
                     lastSentColor[deviceNum] = color;
                     lastSentValid[deviceNum] = true;
@@ -743,12 +789,13 @@ namespace DS4Windows
                     else
                     {
                         if (fadeInRatio < 0.0) fadeInRatio = 0.0;
+                        double connectEase = EaseFade(fadeInRatio);
                         DS4Color fiFrom = connectFadeInFrom[deviceNum];
                         DS4Color fiTo = connectFadeInTo[deviceNum];
                         color = new DS4Color(
-                            (byte)(fiFrom.red + (fiTo.red - fiFrom.red) * fadeInRatio),
-                            (byte)(fiFrom.green + (fiTo.green - fiFrom.green) * fadeInRatio),
-                            (byte)(fiFrom.blue + (fiTo.blue - fiFrom.blue) * fadeInRatio));
+                            (byte)(fiFrom.red + (fiTo.red - fiFrom.red) * connectEase),
+                            (byte)(fiFrom.green + (fiTo.green - fiFrom.green) * connectEase),
+                            (byte)(fiFrom.blue + (fiTo.blue - fiFrom.blue) * connectEase));
                     }
                     lastSentColor[deviceNum] = color;
                     lastSentValid[deviceNum] = true;
@@ -807,12 +854,13 @@ namespace DS4Windows
                         else
                         {
                             if (ratio < 0.0) ratio = 0.0;
+                            double genericEase = EaseFade(ratio);
                             DS4Color fromC = fadeFromColor[deviceNum];
                             DS4Color toC = fadeToColor[deviceNum];
                             color = new DS4Color(
-                                (byte)(fromC.red + (toC.red - fromC.red) * ratio),
-                                (byte)(fromC.green + (toC.green - fromC.green) * ratio),
-                                (byte)(fromC.blue + (toC.blue - fromC.blue) * ratio));
+                                (byte)(fromC.red + (toC.red - fromC.red) * genericEase),
+                                (byte)(fromC.green + (toC.green - fromC.green) * genericEase),
+                                (byte)(fromC.blue + (toC.blue - fromC.blue) * genericEase));
                         }
                     }
                     lastSentColor[deviceNum] = color;
